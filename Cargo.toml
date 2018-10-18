@@ -5,3 +5,4 @@ authors = ["Junfeng Li <lijunfen@amazon.com>"]
 
 [dependencies]
 percent-encoding = "1"
+failure = "0"
