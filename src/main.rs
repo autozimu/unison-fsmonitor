@@ -2,7 +2,9 @@
 extern crate failure;
 extern crate percent_encoding;
 
+use failure::err_msg;
 use failure::Error;
+use std::collections::HashSet;
 use std::process::exit;
 
 type Result<R> = std::result::Result<R, Error>;
@@ -64,6 +66,8 @@ fn main() -> Result<()> {
         _ => bail!("unexpected version cmd: {:?}", input.get(0)),
     };
 
+    let mut replicas = HashSet::new();
+
     loop {
         let input = recv_cmd();
         let cmd = input.get(0).cloned().unwrap_or_default();
@@ -71,6 +75,12 @@ fn main() -> Result<()> {
         if cmd == "DEBUG" {
         } else if cmd == "START" {
         } else if cmd == "WAIT" {
+            let replica = input
+                .get(1)
+                .cloned()
+                .ok_or_else(|| err_msg("Argument is missing!"))?;
+
+            replicas.insert(replica);
         } else if cmd == "CHANGES" {
         } else if cmd == "RESET" {
         } else {
