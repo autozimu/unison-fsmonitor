@@ -10,6 +10,7 @@ use failure::Error;
 use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::io::stdin;
+use std::path::PathBuf;
 use std::process::exit;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
 use std::thread;
@@ -26,13 +27,13 @@ fn decode<'a>(s: &'a str) -> impl AsRef<str> + 'a {
 }
 
 fn send_cmd(cmd: &str, args: &[&str]) {
-    debug!("output: {} {:?}", cmd, args);
-
     let mut output = cmd.to_owned();
     for arg in args {
         output += " ";
         output += &encode(arg).as_ref();
     }
+
+    debug!(">> {}", output);
     println!("{}", output);
 }
 
@@ -58,9 +59,8 @@ fn error(msg: &str) {
 }
 
 fn parse_input(input: &str) -> Result<(String, Vec<String>)> {
-    debug!("input: {}", input);
+    debug!("<< {}", input);
 
-    // TODO: Handle EOF
     let mut cmd = String::new();
     let mut args = vec![];
     for (idx, word) in input.split_whitespace().enumerate() {
@@ -75,10 +75,10 @@ fn parse_input(input: &str) -> Result<(String, Vec<String>)> {
 
 fn add_to_watcher(
     watcher: &mut RecommendedWatcher,
-    fspath: &str,
+    path: &str,
     rx: &Receiver<String>,
 ) -> Result<()> {
-    watcher.watch(fspath, RecursiveMode::Recursive)?;
+    watcher.watch(path, RecursiveMode::Recursive)?;
     ack();
 
     loop {
@@ -98,7 +98,7 @@ fn add_to_watcher(
 fn handle_fsevent(
     rx: &Receiver<DebouncedEvent>,
     replicas: &HashMap<String, String>,
-    pending_changes: &mut HashMap<String, Vec<String>>,
+    pending_changes: &mut HashMap<String, Vec<PathBuf>>,
 ) -> Result<()> {
     for event in rx.try_iter() {
         debug!("FS event: {:?}", event);
@@ -115,10 +115,10 @@ fn handle_fsevent(
                 paths.push(path1);
                 paths.push(path2);
             }
+            DebouncedEvent::Rescan => {}
             DebouncedEvent::Error(err, path) => {
                 bail!("Error occured at watched path ({:?}): {}", path, err);
             }
-            _ => {}
         }
 
         for file_path in paths {
@@ -128,7 +128,7 @@ fn handle_fsevent(
                     pending_changes
                         .entry(replica.clone())
                         .or_default()
-                        .push(relative_path.to_string_lossy().into());
+                        .push(relative_path.into());
                 }
             }
         }
@@ -192,10 +192,6 @@ fn main() -> Result<()> {
 
         let (cmd, mut args) = parse_input(&input)?;
 
-        if cmd != "WAIT" {
-            pending_changes.clear();
-        }
-
         if cmd == "DEBUG" {
         } else if cmd == "START" {
             // Start observing replica.
@@ -205,12 +201,16 @@ fn main() -> Result<()> {
             replicas.insert(replica, path);
         } else if cmd == "WAIT" {
             // Start waiting replica.
-        } else if cmd == "CHANGES" {
-            // Request pending replicas.
             let replica = args.remove(0);
-            let replica_changes: Vec<String> = pending_changes.remove(&replica).unwrap_or_default();
+            if !replicas.contains_key(&replica) {
+                error(&format!("Unknown replica: {}", replica));
+            }
+        } else if cmd == "CHANGES" {
+            // Request pending changes.
+            let replica = args.remove(0);
+            let replica_changes = pending_changes.remove(&replica).unwrap_or_default();
             for c in replica_changes {
-                recursive(&c);
+                recursive(c.to_string_lossy().as_ref());
             }
             done();
         } else if cmd == "RESET" {
@@ -218,7 +218,7 @@ fn main() -> Result<()> {
             let replica = args.remove(0);
             watcher.unwatch(replica)?;
         } else {
-            error(&format!("Unexpected root cmd: {}", cmd));
+            error(&format!("Unexpected cmd: {}", cmd));
         }
     }
 
