@@ -11,13 +11,11 @@ use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::io::stdin;
 use std::process::exit;
-use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
 type Result<R> = std::result::Result<R, Error>;
-
-// TODO: handle sigint.
 
 fn encode(s: &str) -> impl AsRef<str> {
     percent_encoding::utf8_percent_encode(s, percent_encoding::SIMPLE_ENCODE_SET).to_string()
@@ -176,48 +174,53 @@ fn main() -> Result<()> {
     let mut watcher: RecommendedWatcher = Watcher::new(fsevent_tx, Duration::from_secs(delay))?;
 
     loop {
-        let input = match stdin_rx.try_recv() {
-            Ok(input) => input,
-            Err(TryRecvError::Empty) => String::new(),
-            Err(TryRecvError::Disconnected) => bail!("Stdin channel disconnected!"),
-        };
-
-        if !input.is_empty() {
-            let (cmd, mut args) = parse_input(&input)?;
-
-            if cmd != "WAIT" {
-                pending_changes.clear();
-            }
-
-            if cmd == "DEBUG" {
-            } else if cmd == "START" {
-                // Start observing replica.
-                let replica = args.remove(0);
-                let path = args.remove(0);
-                add_to_watcher(&mut watcher, &path, &stdin_rx)?;
-                replicas.insert(replica, path);
-            } else if cmd == "WAIT" {
-                // Start waiting replica.
-            } else if cmd == "CHANGES" {
-                // Request pending replicas.
-                let replica = args.remove(0);
-                let replica_changes: Vec<String> =
-                    pending_changes.remove(&replica).unwrap_or_default();
-                for c in replica_changes {
-                    recursive(&c);
-                }
-                done();
-            } else if cmd == "RESET" {
-                // Stop observing replica.
-                let replica = args.remove(0);
-                watcher.unwatch(replica)?;
-            } else if !cmd.is_empty() {
-                error(&format!("Unexpected root cmd: {}", cmd));
-            }
-        }
-
         handle_fsevent(&fsevent_rx, &replicas, &mut pending_changes)?;
 
-        thread::sleep(Duration::from_secs(1));
+        let input = match stdin_rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(input) => input,
+            Err(RecvTimeoutError::Timeout) => {
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                break;
+            }
+        };
+
+        if input.is_empty() {
+            break;
+        }
+
+        let (cmd, mut args) = parse_input(&input)?;
+
+        if cmd != "WAIT" {
+            pending_changes.clear();
+        }
+
+        if cmd == "DEBUG" {
+        } else if cmd == "START" {
+            // Start observing replica.
+            let replica = args.remove(0);
+            let path = args.remove(0);
+            add_to_watcher(&mut watcher, &path, &stdin_rx)?;
+            replicas.insert(replica, path);
+        } else if cmd == "WAIT" {
+            // Start waiting replica.
+        } else if cmd == "CHANGES" {
+            // Request pending replicas.
+            let replica = args.remove(0);
+            let replica_changes: Vec<String> = pending_changes.remove(&replica).unwrap_or_default();
+            for c in replica_changes {
+                recursive(&c);
+            }
+            done();
+        } else if cmd == "RESET" {
+            // Stop observing replica.
+            let replica = args.remove(0);
+            watcher.unwatch(replica)?;
+        } else {
+            error(&format!("Unexpected root cmd: {}", cmd));
+        }
     }
+
+    Ok(())
 }
