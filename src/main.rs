@@ -2,13 +2,16 @@
 extern crate failure;
 extern crate notify;
 extern crate percent_encoding;
+#[macro_use]
+extern crate log;
+extern crate env_logger;
 
 use failure::Error;
 use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io::stdin;
 use std::process::exit;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
@@ -17,15 +20,16 @@ type Result<R> = std::result::Result<R, Error>;
 // TODO: handle sigint.
 
 fn encode(s: &str) -> impl AsRef<str> {
-    return percent_encoding::utf8_percent_encode(s, percent_encoding::SIMPLE_ENCODE_SET)
-        .to_string();
+    percent_encoding::utf8_percent_encode(s, percent_encoding::SIMPLE_ENCODE_SET).to_string()
 }
 
 fn decode<'a>(s: &'a str) -> impl AsRef<str> + 'a {
-    return percent_encoding::percent_decode(s.as_bytes()).decode_utf8_lossy();
+    percent_encoding::percent_decode(s.as_bytes()).decode_utf8_lossy()
 }
 
 fn send_cmd(cmd: &str, args: &[&str]) {
+    debug!("output: {} {:?}", cmd, args);
+
     let mut output = cmd.to_owned();
     for arg in args {
         output += " ";
@@ -38,8 +42,12 @@ fn ack() {
     send_cmd("OK", &[]);
 }
 
-fn changes(replicas: &[&str]) {
-    send_cmd("CHANGES", replicas);
+fn changes(replica: &str) {
+    send_cmd("CHANGES", &[replica]);
+}
+
+fn recursive(path: &str) {
+    send_cmd("RECURSIVE", &[path]);
 }
 
 fn done() {
@@ -51,9 +59,10 @@ fn error(msg: &str) {
     exit(1);
 }
 
-fn recv_cmd(rx: &Receiver<String>) -> Result<(String, Vec<String>)> {
+fn parse_input(input: &str) -> Result<(String, Vec<String>)> {
+    debug!("input: {}", input);
+
     // TODO: Handle EOF
-    let input = rx.try_recv()?;
     let mut cmd = String::new();
     let mut args = vec![];
     for (idx, word) in input.split_whitespace().enumerate() {
@@ -75,9 +84,10 @@ fn add_to_watcher(
     ack();
 
     loop {
-        let (cmd, _) = recv_cmd(rx)?;
+        let input = rx.recv()?;
+        let (cmd, _) = parse_input(&input)?;
         match cmd.as_str() {
-            "ACK" => ack(),
+            "DIR" => ack(),
             "LINK" => bail!("link following is not supported, please disable this option (-links)"),
             "DONE" => break,
             _ => error(&format!("Unexpected cmd: {}", cmd)),
@@ -87,24 +97,55 @@ fn add_to_watcher(
     Ok(())
 }
 
-fn handle_fsevent<'a>(
+fn handle_fsevent(
     rx: &Receiver<DebouncedEvent>,
-    replicas: impl Iterator<Item = &'a String>,
+    replicas: &HashMap<String, String>,
+    pending_changes: &mut HashMap<String, Vec<String>>,
 ) -> Result<()> {
-    if rx.recv_timeout(Duration::from_secs(1)).is_ok() {
-        // TODO: notfiy matched replicas only.
-        changes(
-            replicas
-                .map(String::as_str)
-                .collect::<Vec<&str>>()
-                .as_slice(),
-        );
+    for event in rx.try_iter() {
+        debug!("FS event: {:?}", event);
+
+        let mut paths = vec![];
+        match event {
+            DebouncedEvent::NoticeWrite(path)
+            | DebouncedEvent::NoticeRemove(path)
+            | DebouncedEvent::Create(path)
+            | DebouncedEvent::Write(path)
+            | DebouncedEvent::Chmod(path)
+            | DebouncedEvent::Remove(path) => paths.push(path),
+            DebouncedEvent::Rename(path1, path2) => {
+                paths.push(path1);
+                paths.push(path2);
+            }
+            DebouncedEvent::Error(err, path) => {
+                bail!("Error occured at watched path ({:?}): {}", path, err);
+            }
+            _ => {}
+        }
+
+        for file_path in paths {
+            for (replica, replica_path) in replicas {
+                if file_path.starts_with(replica_path) {
+                    let relative_path = file_path.strip_prefix(replica_path)?;
+                    pending_changes
+                        .entry(replica.clone())
+                        .or_default()
+                        .push(relative_path.to_string_lossy().into());
+                }
+            }
+        }
+    }
+
+    for replica in pending_changes.keys() {
+        changes(replica);
     }
 
     Ok(())
 }
 
 fn main() -> Result<()> {
+    env_logger::init();
+
     send_cmd("VERSION", &["1"]);
 
     let (stdin_tx, stdin_rx) = channel();
@@ -114,7 +155,8 @@ fn main() -> Result<()> {
         stdin_tx.send(input).unwrap();
     });
 
-    let (cmd, args) = recv_cmd(&stdin_rx)?;
+    let input = stdin_rx.recv()?;
+    let (cmd, args) = parse_input(&input)?;
     if cmd != "VERSION" {
         bail!("Unexpected version cmd: {}", cmd);
     }
@@ -123,35 +165,55 @@ fn main() -> Result<()> {
         bail!("Unexpected version: {:?}", version);
     }
 
-    let mut replicas = HashSet::new();
+    // id => path.
+    let mut replicas = HashMap::new();
+
+    // id => changed paths.
+    let mut pending_changes = HashMap::new();
 
     let delay = 1;
     let (fsevent_tx, fsevent_rx) = channel();
     let mut watcher: RecommendedWatcher = Watcher::new(fsevent_tx, Duration::from_secs(delay))?;
 
     loop {
-        let (cmd, mut args) = recv_cmd(&stdin_rx)?;
+        let input = match stdin_rx.try_recv() {
+            Ok(input) => input,
+            Err(TryRecvError::Empty) => String::new(),
+            Err(TryRecvError::Disconnected) => bail!("Stdin channel disconnected!"),
+        };
 
-        if cmd == "DEBUG" {
-        } else if cmd == "START" {
-            // Start observing replica.
-            let replica = args.remove(0);
-            let path = args.remove(0);
-            add_to_watcher(&mut watcher, &path, &stdin_rx)?;
-            replicas.insert(replica);
-        } else if cmd == "WAIT" {
-            // Start waiting for another replica.
-        } else if cmd == "CHANGES" {
-            // Get pending replicas.
-            done();
-        } else if cmd == "RESET" {
-            // Stop observing replica.
-            let replica = args.remove(0);
-            watcher.unwatch(replica)?;
-        } else {
-            error(&format!("Unexpected root cmd: {}", cmd));
+        if !input.is_empty() {
+            let (cmd, mut args) = parse_input(&input)?;
+
+            if cmd == "DEBUG" {
+            } else if cmd == "START" {
+                // Start observing replica.
+                let replica = args.remove(0);
+                let path = args.remove(0);
+                add_to_watcher(&mut watcher, &path, &stdin_rx)?;
+                replicas.insert(replica, path);
+            } else if cmd == "WAIT" {
+                // Start waiting replica.
+            } else if cmd == "CHANGES" {
+                // Request pending replicas.
+                let replica = args.remove(0);
+                let replica_changes: Vec<String> =
+                    pending_changes.remove(&replica).unwrap_or_default();
+                for c in replica_changes {
+                    recursive(&c);
+                }
+                done();
+            } else if cmd == "RESET" {
+                // Stop observing replica.
+                let replica = args.remove(0);
+                watcher.unwatch(replica)?;
+            } else if !cmd.is_empty() {
+                error(&format!("Unexpected root cmd: {}", cmd));
+            }
         }
 
-        handle_fsevent(&fsevent_rx, replicas.iter())?;
+        handle_fsevent(&fsevent_rx, &replicas, &mut pending_changes)?;
+
+        thread::sleep(Duration::from_secs(1));
     }
 }
