@@ -185,6 +185,10 @@ fn main() -> Result<()> {
         if !input.is_empty() {
             let (cmd, mut args) = parse_input(&input)?;
 
+            if cmd != "WAIT" {
+                pending_changes.clear();
+            }
+
             if cmd == "DEBUG" {
             } else if cmd == "START" {
                 // Start observing replica.
