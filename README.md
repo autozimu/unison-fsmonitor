@@ -5,7 +5,6 @@
 
 ## Usage
 ```
-git clone https://github.com/autozimu/unison-fsmonitor.git && cd unison-fsmonitor
 cargo build --release
 ln -s $PWD/target/release/unison-fsmonitor /usr/local/bin/
 ```

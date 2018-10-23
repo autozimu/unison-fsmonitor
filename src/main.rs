@@ -12,9 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::io::{stdin, BufRead};
 use std::path::PathBuf;
 use std::process::exit;
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
+use std::sync::mpsc::channel;
 use std::thread;
-use std::time::Duration;
 
 type Result<R> = std::result::Result<R, Error>;
 
@@ -59,8 +58,6 @@ fn send_error(msg: &str) {
 }
 
 fn parse_input(input: &str) -> Result<(String, Vec<String>)> {
-    debug!("<< {}", input.trim());
-
     let mut cmd = String::new();
     let mut args = vec![];
     for (idx, word) in input.split_whitespace().enumerate() {
@@ -73,147 +70,123 @@ fn parse_input(input: &str) -> Result<(String, Vec<String>)> {
     Ok((cmd, args))
 }
 
-fn handle_fsevent(
-    rx: &Receiver<RawEvent>,
-    replicas: &HashMap<String, String>,
-    pending_changes: &mut HashMap<String, HashSet<PathBuf>>,
-) -> Result<()> {
-    for event in rx.try_iter() {
-        debug!("FS event: {:?}", event);
-
-        if let Some(file_path) = event.path {
-            for (replica, replica_path) in replicas {
-                if file_path.starts_with(replica_path) {
-                    let relative_path = file_path.strip_prefix(replica_path)?;
-                    pending_changes
-                        .entry(replica.clone())
-                        .or_default()
-                        .insert(relative_path.into());
-                    debug!("pending_changes: {:?}", pending_changes);
-                }
-            }
-        }
-    }
-
-    for replica in pending_changes.keys() {
-        send_changes(replica);
-    }
-
-    Ok(())
+#[derive(Debug)]
+enum Event {
+    Input(String),
+    FSEvent(RawEvent),
 }
 
 fn main() -> Result<()> {
     env_logger::init();
-
-    send_cmd("VERSION", &["1"]);
-
-    let (stdin_tx, stdin_rx) = channel();
-    thread::spawn(move || {
-        let stdin = stdin();
-        let mut handle = stdin.lock();
-
-        loop {
-            let mut input = String::new();
-            if let Err(err) = handle.read_line(&mut input) {
-                debug!("Failed to read input: {:?}", err);
-                break;
-            }
-            if let Err(err) = stdin_tx.send(input) {
-                debug!("Failed to send input: {:?}", err);
-                break;
-            }
-        }
-    });
-
-    let input = stdin_rx.recv()?;
-    let (cmd, args) = parse_input(&input)?;
-    if cmd != "VERSION" {
-        bail!("Unexpected version cmd: {}", cmd);
-    }
-    let version = args.get(0);
-    if version != Some(&"1".to_owned()) {
-        bail!("Unexpected version: {:?}", version);
-    }
 
     // id => path.
     let mut replicas = HashMap::new();
     debug!("replicas: {:?}", replicas);
 
     // id => changed paths.
-    let mut pending_changes = HashMap::new();
+    let mut pending_changes: HashMap<String, HashSet<PathBuf>> = HashMap::new();
     debug!("pending_changes: {:?}", pending_changes);
+
+    let (tx, rx) = channel();
+    let tx_clone = tx.clone();
+    thread::spawn(move || -> Result<()> {
+        let stdin = stdin();
+        let mut handle = stdin.lock();
+
+        loop {
+            let mut input = String::new();
+            handle.read_line(&mut input)?;
+            tx_clone.send(Event::Input(input))?;
+        }
+    });
 
     let (fsevent_tx, fsevent_rx) = channel();
     let mut watcher: RecommendedWatcher = Watcher::new_raw(fsevent_tx)?;
+    let tx_clone = tx.clone();
+    thread::spawn(move || -> Result<()> {
+        loop {
+            tx_clone.send(Event::FSEvent(fsevent_rx.recv()?))?;
+        }
+    });
+
+    send_cmd("VERSION", &["1"]);
 
     loop {
-        handle_fsevent(&fsevent_rx, &replicas, &mut pending_changes)?;
+        let event = rx.recv()?;
 
-        let input = match stdin_rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(input) => {
-                if input.is_empty() {
-                    break;
+        match event {
+            Event::Input(input) => {
+                debug!("<< {}", input.trim());
+                let (cmd, mut args) = parse_input(&input)?;
+
+                if cmd == "VERSION" {
+                    let version = args.remove(0);
+                    if version != "1" {
+                        bail!("Unexpected version: {:?}", version);
+                    }
+                } else if cmd == "DEBUG" {
+                } else if cmd == "START" {
+                    // Start observing replica.
+                    let replica = args.remove(0);
+                    let path = args.remove(0);
+
+                    watcher.watch(&path, RecursiveMode::Recursive)?;
+                    replicas.insert(replica, path);
+                    debug!("replicas: {:?}", replicas);
+                    send_ack();
+                } else if cmd == "DIR" {
+                    send_ack();
+                } else if cmd == "LINK" {
+                    bail!("link following is not supported, please disable this option (-links)");
+                } else if cmd == "DONE" {
+                } else if cmd == "WAIT" {
+                    // Start waiting replica.
+                    let replica = args.remove(0);
+                    if !replicas.contains_key(&replica) {
+                        send_error(&format!("Unknown replica: {}", replica));
+                    }
+                } else if cmd == "CHANGES" {
+                    // Request pending changes.
+                    let replica = args.remove(0);
+                    let replica_changes = pending_changes.remove(&replica).unwrap_or_default();
+                    for c in replica_changes {
+                        send_recursive(c.to_string_lossy().as_ref());
+                    }
+                    debug!("pending_changes: {:?}", pending_changes);
+                    send_done();
+                } else if cmd == "RESET" {
+                    // Stop observing replica.
+                    let replica = args.remove(0);
+                    watcher.unwatch(&replica)?;
+                    replicas.remove(&replica);
+                    debug!("replicas: {:?}", replicas);
+                } else {
+                    send_error(&format!("Unexpected cmd: {}", cmd));
                 }
-                input
             }
-            Err(RecvTimeoutError::Timeout) => {
-                continue;
-            }
-            Err(RecvTimeoutError::Disconnected) => {
-                break;
-            }
-        };
+            Event::FSEvent(fsevent) => {
+                debug!("FS event: {:?}", fsevent);
 
-        let (cmd, mut args) = parse_input(&input)?;
+                let mut matched_replicas = HashSet::new();
 
-        if cmd == "DEBUG" {
-        } else if cmd == "START" {
-            // Start observing replica.
-            let replica = args.remove(0);
-            let path = args.remove(0);
+                if let Some(file_path) = fsevent.path {
+                    for (replica, replica_path) in &replicas {
+                        if file_path.starts_with(replica_path) {
+                            matched_replicas.insert(replica.clone());
+                            let relative_path = file_path.strip_prefix(replica_path)?;
+                            pending_changes
+                                .entry(replica.clone())
+                                .or_default()
+                                .insert(relative_path.into());
+                            debug!("pending_changes: {:?}", pending_changes);
+                        }
+                    }
+                }
 
-            watcher.watch(&path, RecursiveMode::Recursive)?;
-            replicas.insert(replica, path);
-            send_ack();
-            loop {
-                let input = stdin_rx.recv()?;
-                let (cmd, _) = parse_input(&input)?;
-                match cmd.as_str() {
-                    "DIR" => send_ack(),
-                    "LINK" => bail!(
-                        "link following is not supported, please disable this option (-links)"
-                    ),
-                    "DONE" => break,
-                    _ => send_error(&format!("Unexpected cmd: {}", cmd)),
+                for replica in matched_replicas {
+                    send_changes(&replica);
                 }
             }
-
-            debug!("replicas: {:?}", replicas);
-        } else if cmd == "WAIT" {
-            // Start waiting replica.
-            let replica = args.remove(0);
-            if !replicas.contains_key(&replica) {
-                send_error(&format!("Unknown replica: {}", replica));
-            }
-        } else if cmd == "CHANGES" {
-            // Request pending changes.
-            let replica = args.remove(0);
-            let replica_changes = pending_changes.remove(&replica).unwrap_or_default();
-            for c in replica_changes {
-                send_recursive(c.to_string_lossy().as_ref());
-            }
-            debug!("pending_changes: {:?}", pending_changes);
-            send_done();
-        } else if cmd == "RESET" {
-            // Stop observing replica.
-            let replica = args.remove(0);
-            watcher.unwatch(&replica)?;
-            replicas.remove(&replica);
-            debug!("replicas: {:?}", replicas);
-        } else {
-            send_error(&format!("Unexpected cmd: {}", cmd));
         }
     }
-
-    Ok(())
 }
