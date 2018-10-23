@@ -7,7 +7,7 @@ extern crate log;
 extern crate env_logger;
 
 use failure::Error;
-use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
 use std::io::{stdin, BufRead};
 use std::path::PathBuf;
@@ -59,7 +59,7 @@ fn error(msg: &str) {
 }
 
 fn parse_input(input: &str) -> Result<(String, Vec<String>)> {
-    debug!("<< {}", input);
+    debug!("<< {}", input.trim());
 
     let mut cmd = String::new();
     let mut args = vec![];
@@ -96,34 +96,14 @@ fn add_to_watcher(
 }
 
 fn handle_fsevent(
-    rx: &Receiver<DebouncedEvent>,
+    rx: &Receiver<RawEvent>,
     replicas: &HashMap<String, String>,
     pending_changes: &mut HashMap<String, HashSet<PathBuf>>,
 ) -> Result<()> {
     for event in rx.try_iter() {
         debug!("FS event: {:?}", event);
 
-        let mut paths = vec![];
-        match event {
-            DebouncedEvent::NoticeWrite(path)
-            | DebouncedEvent::NoticeRemove(path)
-            | DebouncedEvent::Create(path)
-            | DebouncedEvent::Write(path)
-            | DebouncedEvent::Chmod(path)
-            | DebouncedEvent::Remove(path) => {
-                paths.push(path);
-            }
-            DebouncedEvent::Rename(path1, path2) => {
-                paths.push(path1);
-                paths.push(path2);
-            }
-            DebouncedEvent::Rescan => {}
-            DebouncedEvent::Error(err, path) => {
-                bail!("Error occured at watched path ({:?}): {}", path, err);
-            }
-        }
-
-        for file_path in paths {
+        if let Some(file_path) = event.path {
             for (replica, replica_path) in replicas {
                 if file_path.starts_with(replica_path) {
                     let relative_path = file_path.strip_prefix(replica_path)?;
@@ -185,9 +165,8 @@ fn main() -> Result<()> {
     let mut pending_changes = HashMap::new();
     debug!("pending_changes: {:?}", pending_changes);
 
-    let delay = 1;
     let (fsevent_tx, fsevent_rx) = channel();
-    let mut watcher: RecommendedWatcher = Watcher::new(fsevent_tx, Duration::from_secs(delay))?;
+    let mut watcher: RecommendedWatcher = Watcher::new_raw(fsevent_tx)?;
 
     loop {
         handle_fsevent(&fsevent_rx, &replicas, &mut pending_changes)?;
