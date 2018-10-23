@@ -37,23 +37,23 @@ fn send_cmd(cmd: &str, args: &[&str]) {
     println!("{}", output);
 }
 
-fn ack() {
+fn send_ack() {
     send_cmd("OK", &[]);
 }
 
-fn changes(replica: &str) {
+fn send_changes(replica: &str) {
     send_cmd("CHANGES", &[replica]);
 }
 
-fn recursive(path: &str) {
+fn send_recursive(path: &str) {
     send_cmd("RECURSIVE", &[path]);
 }
 
-fn done() {
+fn send_done() {
     send_cmd("DONE", &[]);
 }
 
-fn error(msg: &str) {
+fn send_error(msg: &str) {
     send_cmd("ERROR", &[msg]);
     exit(1);
 }
@@ -71,28 +71,6 @@ fn parse_input(input: &str) -> Result<(String, Vec<String>)> {
         }
     }
     Ok((cmd, args))
-}
-
-fn add_to_watcher(
-    watcher: &mut RecommendedWatcher,
-    path: &str,
-    rx: &Receiver<String>,
-) -> Result<()> {
-    watcher.watch(path, RecursiveMode::Recursive)?;
-    ack();
-
-    loop {
-        let input = rx.recv()?;
-        let (cmd, _) = parse_input(&input)?;
-        match cmd.as_str() {
-            "DIR" => ack(),
-            "LINK" => bail!("link following is not supported, please disable this option (-links)"),
-            "DONE" => break,
-            _ => error(&format!("Unexpected cmd: {}", cmd)),
-        }
-    }
-
-    Ok(())
 }
 
 fn handle_fsevent(
@@ -118,7 +96,7 @@ fn handle_fsevent(
     }
 
     for replica in pending_changes.keys() {
-        changes(replica);
+        send_changes(replica);
     }
 
     Ok(())
@@ -193,24 +171,39 @@ fn main() -> Result<()> {
             // Start observing replica.
             let replica = args.remove(0);
             let path = args.remove(0);
-            add_to_watcher(&mut watcher, &path, &stdin_rx)?;
+
+            watcher.watch(&path, RecursiveMode::Recursive)?;
             replicas.insert(replica, path);
+            send_ack();
+            loop {
+                let input = stdin_rx.recv()?;
+                let (cmd, _) = parse_input(&input)?;
+                match cmd.as_str() {
+                    "DIR" => send_ack(),
+                    "LINK" => bail!(
+                        "link following is not supported, please disable this option (-links)"
+                    ),
+                    "DONE" => break,
+                    _ => send_error(&format!("Unexpected cmd: {}", cmd)),
+                }
+            }
+
             debug!("replicas: {:?}", replicas);
         } else if cmd == "WAIT" {
             // Start waiting replica.
             let replica = args.remove(0);
             if !replicas.contains_key(&replica) {
-                error(&format!("Unknown replica: {}", replica));
+                send_error(&format!("Unknown replica: {}", replica));
             }
         } else if cmd == "CHANGES" {
             // Request pending changes.
             let replica = args.remove(0);
             let replica_changes = pending_changes.remove(&replica).unwrap_or_default();
             for c in replica_changes {
-                recursive(c.to_string_lossy().as_ref());
+                send_recursive(c.to_string_lossy().as_ref());
             }
             debug!("pending_changes: {:?}", pending_changes);
-            done();
+            send_done();
         } else if cmd == "RESET" {
             // Stop observing replica.
             let replica = args.remove(0);
@@ -218,7 +211,7 @@ fn main() -> Result<()> {
             replicas.remove(&replica);
             debug!("replicas: {:?}", replicas);
         } else {
-            error(&format!("Unexpected cmd: {}", cmd));
+            send_error(&format!("Unexpected cmd: {}", cmd));
         }
     }
 
