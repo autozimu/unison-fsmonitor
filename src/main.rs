@@ -8,8 +8,8 @@ extern crate env_logger;
 
 use failure::Error;
 use notify::{DebouncedEvent, RecommendedWatcher, RecursiveMode, Watcher};
-use std::collections::HashMap;
-use std::io::stdin;
+use std::collections::{HashMap, HashSet};
+use std::io::{stdin, BufRead};
 use std::path::PathBuf;
 use std::process::exit;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
@@ -98,7 +98,7 @@ fn add_to_watcher(
 fn handle_fsevent(
     rx: &Receiver<DebouncedEvent>,
     replicas: &HashMap<String, String>,
-    pending_changes: &mut HashMap<String, Vec<PathBuf>>,
+    pending_changes: &mut HashMap<String, HashSet<PathBuf>>,
 ) -> Result<()> {
     for event in rx.try_iter() {
         debug!("FS event: {:?}", event);
@@ -110,7 +110,9 @@ fn handle_fsevent(
             | DebouncedEvent::Create(path)
             | DebouncedEvent::Write(path)
             | DebouncedEvent::Chmod(path)
-            | DebouncedEvent::Remove(path) => paths.push(path),
+            | DebouncedEvent::Remove(path) => {
+                paths.push(path);
+            }
             DebouncedEvent::Rename(path1, path2) => {
                 paths.push(path1);
                 paths.push(path2);
@@ -128,7 +130,8 @@ fn handle_fsevent(
                     pending_changes
                         .entry(replica.clone())
                         .or_default()
-                        .push(relative_path.into());
+                        .insert(relative_path.into());
+                    debug!("pending_changes: {:?}", pending_changes);
                 }
             }
         }
@@ -147,10 +150,21 @@ fn main() -> Result<()> {
     send_cmd("VERSION", &["1"]);
 
     let (stdin_tx, stdin_rx) = channel();
-    thread::spawn(move || loop {
-        let mut input = String::new();
-        stdin().read_line(&mut input).unwrap();
-        stdin_tx.send(input).unwrap();
+    thread::spawn(move || {
+        let stdin = stdin();
+        let mut handle = stdin.lock();
+
+        loop {
+            let mut input = String::new();
+            if let Err(err) = handle.read_line(&mut input) {
+                debug!("Failed to read input: {:?}", err);
+                break;
+            }
+            if let Err(err) = stdin_tx.send(input) {
+                debug!("Failed to send input: {:?}", err);
+                break;
+            }
+        }
     });
 
     let input = stdin_rx.recv()?;
@@ -165,9 +179,11 @@ fn main() -> Result<()> {
 
     // id => path.
     let mut replicas = HashMap::new();
+    debug!("replicas: {:?}", replicas);
 
     // id => changed paths.
     let mut pending_changes = HashMap::new();
+    debug!("pending_changes: {:?}", pending_changes);
 
     let delay = 1;
     let (fsevent_tx, fsevent_rx) = channel();
@@ -177,7 +193,12 @@ fn main() -> Result<()> {
         handle_fsevent(&fsevent_rx, &replicas, &mut pending_changes)?;
 
         let input = match stdin_rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(input) => input,
+            Ok(input) => {
+                if input.is_empty() {
+                    break;
+                }
+                input
+            }
             Err(RecvTimeoutError::Timeout) => {
                 continue;
             }
@@ -185,10 +206,6 @@ fn main() -> Result<()> {
                 break;
             }
         };
-
-        if input.is_empty() {
-            break;
-        }
 
         let (cmd, mut args) = parse_input(&input)?;
 
@@ -199,6 +216,7 @@ fn main() -> Result<()> {
             let path = args.remove(0);
             add_to_watcher(&mut watcher, &path, &stdin_rx)?;
             replicas.insert(replica, path);
+            debug!("replicas: {:?}", replicas);
         } else if cmd == "WAIT" {
             // Start waiting replica.
             let replica = args.remove(0);
@@ -212,11 +230,14 @@ fn main() -> Result<()> {
             for c in replica_changes {
                 recursive(c.to_string_lossy().as_ref());
             }
+            debug!("pending_changes: {:?}", pending_changes);
             done();
         } else if cmd == "RESET" {
             // Stop observing replica.
             let replica = args.remove(0);
-            watcher.unwatch(replica)?;
+            watcher.unwatch(&replica)?;
+            replicas.remove(&replica);
+            debug!("replicas: {:?}", replicas);
         } else {
             error(&format!("Unexpected cmd: {}", cmd));
         }
