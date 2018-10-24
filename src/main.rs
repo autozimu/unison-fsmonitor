@@ -119,49 +119,59 @@ fn main() -> Result<()> {
                 debug!("<< {}", input.trim());
                 let (cmd, mut args) = parse_input(&input)?;
 
-                if cmd == "VERSION" {
-                    let version = args.remove(0);
-                    if version != "1" {
-                        bail!("Unexpected version: {:?}", version);
+                match cmd.as_str() {
+                    "VERSION" => {
+                        let version = args.remove(0);
+                        if version != "1" {
+                            bail!("Unexpected version: {:?}", version);
+                        }
                     }
-                } else if cmd == "DEBUG" {
-                } else if cmd == "START" {
-                    // Start observing replica.
-                    let replica = args.remove(0);
-                    let path = args.remove(0);
+                    "START" => {
+                        // Start observing replica.
+                        let replica = args.remove(0);
+                        let path = args.remove(0);
 
-                    watcher.watch(&path, RecursiveMode::Recursive)?;
-                    replicas.insert(replica, path);
-                    debug!("replicas: {:?}", replicas);
-                    send_ack();
-                } else if cmd == "DIR" {
-                    send_ack();
-                } else if cmd == "LINK" {
-                    bail!("link following is not supported, please disable this option (-links)");
-                } else if cmd == "DONE" {
-                } else if cmd == "WAIT" {
-                    // Start waiting replica.
-                    let replica = args.remove(0);
-                    if !replicas.contains_key(&replica) {
-                        send_error(&format!("Unknown replica: {}", replica));
+                        watcher.watch(&path, RecursiveMode::Recursive)?;
+                        replicas.insert(replica, path);
+                        debug!("replicas: {:?}", replicas);
+                        send_ack();
                     }
-                } else if cmd == "CHANGES" {
-                    // Request pending changes.
-                    let replica = args.remove(0);
-                    let replica_changes = pending_changes.remove(&replica).unwrap_or_default();
-                    for c in replica_changes {
-                        send_recursive(c.to_string_lossy().as_ref());
+                    "DIR" => {
+                        send_ack();
                     }
-                    debug!("pending_changes: {:?}", pending_changes);
-                    send_done();
-                } else if cmd == "RESET" {
-                    // Stop observing replica.
-                    let replica = args.remove(0);
-                    watcher.unwatch(&replica)?;
-                    replicas.remove(&replica);
-                    debug!("replicas: {:?}", replicas);
-                } else {
-                    send_error(&format!("Unexpected cmd: {}", cmd));
+                    "LINK" => {
+                        bail!(
+                            "link following is not supported, please disable this option (-links)"
+                        );
+                    }
+                    "WAIT" => {
+                        // Start waiting replica.
+                        let replica = args.remove(0);
+                        if !replicas.contains_key(&replica) {
+                            send_error(&format!("Unknown replica: {}", replica));
+                        }
+                    }
+                    "CHANGES" => {
+                        // Request pending changes.
+                        let replica = args.remove(0);
+                        let replica_changes = pending_changes.remove(&replica).unwrap_or_default();
+                        for c in replica_changes {
+                            send_recursive(c.to_string_lossy().as_ref());
+                        }
+                        debug!("pending_changes: {:?}", pending_changes);
+                        send_done();
+                    }
+                    "RESET" => {
+                        // Stop observing replica.
+                        let replica = args.remove(0);
+                        watcher.unwatch(&replica)?;
+                        replicas.remove(&replica);
+                        debug!("replicas: {:?}", replicas);
+                    }
+                    "DEBUG" | "DONE" => {}
+                    _ => {
+                        send_error(&format!("Unexpected cmd: {}", cmd));
+                    }
                 }
             }
             Event::FSEvent(fsevent) => {
