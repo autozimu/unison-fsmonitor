@@ -1,12 +1,11 @@
-#[macro_use]
+extern crate env_logger;
 extern crate failure;
+extern crate log;
 extern crate notify;
 extern crate percent_encoding;
-#[macro_use]
-extern crate log;
-extern crate env_logger;
 
-use failure::Error;
+use failure::{bail, Error};
+use log::debug;
 use notify::{RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
 use std::io::{stdin, BufRead};
