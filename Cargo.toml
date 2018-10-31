@@ -1,7 +1,9 @@
 [package]
 name = "unison-fsmonitor"
+description = "unison-fsmonitor implementation"
 version = "0.1.0"
 authors = ["Junfeng Li <lijunfen@amazon.com>"]
+license = "MIT"
 
 [dependencies]
 percent-encoding = "1"
