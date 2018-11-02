@@ -8,6 +8,7 @@ use failure::{bail, Error};
 use log::debug;
 use notify::{RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
+use std::fs::canonicalize;
 use std::io::{stdin, BufRead};
 use std::path::PathBuf;
 use std::process::exit;
@@ -86,6 +87,9 @@ fn main() -> Result<()> {
     let mut pending_changes: HashMap<String, HashSet<PathBuf>> = HashMap::new();
     debug!("pending_changes: {:?}", pending_changes);
 
+    // real path => symbolic link paths.
+    let mut link_map: HashMap<_, HashSet<_>> = HashMap::new();
+
     let (tx, rx) = channel();
     let tx_clone = tx.clone();
     thread::spawn(move || -> Result<()> {
@@ -110,6 +114,8 @@ fn main() -> Result<()> {
 
     send_cmd("VERSION", &["1"]);
 
+    let mut replica_path = String::new();
+
     loop {
         let event = rx.recv()?;
 
@@ -127,21 +133,27 @@ fn main() -> Result<()> {
                     }
                     "START" => {
                         // Start observing replica.
-                        let replica = args.remove(0);
-                        let path = args.remove(0);
+                        let replica_id = args.remove(0);
+                        replica_path = args.remove(0);
 
-                        watcher.watch(&path, RecursiveMode::Recursive)?;
-                        replicas.insert(replica, path);
+                        // TODO: is recursive necessary here?
+                        watcher.watch(&replica_path, RecursiveMode::Recursive)?;
+                        replicas.insert(replica_id.clone(), replica_path.clone());
                         debug!("replicas: {:?}", replicas);
+                        send_ack();
+                    }
+                    "LINK" => {
+                        // Follow a link.
+                        let filename = args.remove(0);
+                        let link = PathBuf::from(&replica_path).join(filename);
+                        let realpath = canonicalize(&link)?;
+
+                        watcher.watch(&realpath, RecursiveMode::Recursive)?;
+                        link_map.entry(realpath).or_default().insert(link);
                         send_ack();
                     }
                     "DIR" => {
                         send_ack();
-                    }
-                    "LINK" => {
-                        bail!(
-                            "link following is not supported, please disable this option (-links)"
-                        );
                     }
                     "WAIT" => {
                         // Start waiting replica.
@@ -167,7 +179,9 @@ fn main() -> Result<()> {
                         replicas.remove(&replica);
                         debug!("replicas: {:?}", replicas);
                     }
-                    "DEBUG" | "DONE" => {}
+                    "DEBUG" | "DONE" => {
+                        // TODO: update debug level.
+                    }
                     _ => {
                         send_error(&format!("Unexpected cmd: {}", cmd));
                     }
@@ -176,24 +190,38 @@ fn main() -> Result<()> {
             Event::FSEvent(fsevent) => {
                 debug!("FS event: {:?}", fsevent);
 
-                let mut matched_replicas = HashSet::new();
+                let mut matched_replica_ids = HashSet::new();
 
                 if let Some(file_path) = fsevent.path {
-                    for (replica, replica_path) in &replicas {
-                        if file_path.starts_with(replica_path) {
-                            matched_replicas.insert(replica.clone());
-                            let relative_path = file_path.strip_prefix(replica_path)?;
-                            pending_changes
-                                .entry(replica.clone())
-                                .or_default()
-                                .insert(relative_path.into());
-                            debug!("pending_changes: {:?}", pending_changes);
+                    let mut paths = HashSet::new();
+                    paths.insert(file_path.clone());
+                    for (realpath, links) in &link_map {
+                        if file_path.starts_with(realpath) {
+                            for link in links {
+                                paths.insert(
+                                    PathBuf::from(link).join(file_path.strip_prefix(realpath)?),
+                                );
+                            }
+                        }
+                    }
+
+                    for path in paths {
+                        for (replica_id, replica_path) in &replicas {
+                            if path.starts_with(replica_path) {
+                                matched_replica_ids.insert(replica_id.clone());
+                                let relative_path = path.strip_prefix(replica_path)?;
+                                pending_changes
+                                    .entry(replica_id.clone())
+                                    .or_default()
+                                    .insert(relative_path.into());
+                                debug!("pending_changes: {:?}", pending_changes);
+                            }
                         }
                     }
                 }
 
-                for replica in matched_replicas {
-                    send_changes(&replica);
+                for id in matched_replica_ids {
+                    send_changes(&id);
                 }
             }
         }
