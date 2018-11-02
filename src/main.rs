@@ -136,7 +136,6 @@ fn main() -> Result<()> {
                         let replica_id = args.remove(0);
                         replica_path = args.remove(0);
 
-                        // TODO: is recursive necessary here?
                         watcher.watch(&replica_path, RecursiveMode::Recursive)?;
                         replicas.insert(replica_id.clone(), replica_path.clone());
                         debug!("replicas: {:?}", replicas);
@@ -144,12 +143,12 @@ fn main() -> Result<()> {
                     }
                     "LINK" => {
                         // Follow a link.
-                        let filename = args.remove(0);
-                        let link = PathBuf::from(&replica_path).join(filename);
-                        let realpath = canonicalize(&link)?;
+                        let path = args.remove(0);
+                        let fullpath = PathBuf::from(&replica_path).join(path);
+                        let realpath = canonicalize(&fullpath)?;
 
                         watcher.watch(&realpath, RecursiveMode::Recursive)?;
-                        link_map.entry(realpath).or_default().insert(link);
+                        link_map.entry(realpath).or_default().insert(fullpath);
                         send_ack();
                     }
                     "DIR" => {
