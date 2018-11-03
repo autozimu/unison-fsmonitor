@@ -4,13 +4,14 @@ extern crate log;
 extern crate notify;
 extern crate percent_encoding;
 
-use failure::{bail, Error};
-use log::debug;
+use failure::{bail, err_msg, format_err, Error};
+use log::{debug, warn};
 use notify::{RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::fs::canonicalize;
 use std::io::{stdin, BufRead};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::sync::mpsc::channel;
 use std::thread;
@@ -57,14 +58,14 @@ fn send_error(msg: &str) {
     exit(1);
 }
 
-fn parse_input(input: &str) -> Result<(String, Vec<String>)> {
+fn parse_input(input: &str) -> Result<(String, VecDeque<String>)> {
     let mut cmd = String::new();
-    let mut args = vec![];
+    let mut args = VecDeque::new();
     for (idx, word) in input.split_whitespace().enumerate() {
         if idx == 0 {
             cmd = word.to_owned();
         } else {
-            args.push(decode(word).as_ref().to_owned())
+            args.push_back(decode(word).as_ref().to_owned())
         }
     }
     Ok((cmd, args))
@@ -76,19 +77,34 @@ enum Event {
     FSEvent(RawEvent),
 }
 
+#[derive(Debug)]
+struct Replica {
+    root: PathBuf,
+    dirs: HashSet<PathBuf>,
+}
+
+impl Replica {
+    pub fn new<P: AsRef<Path>>(p: P) -> Replica {
+        Replica {
+            root: PathBuf::from(p.as_ref()),
+            dirs: HashSet::new(),
+        }
+    }
+}
+
 fn main() -> Result<()> {
     env_logger::init();
 
-    // id => path.
-    let mut replicas = HashMap::new();
+    // real path => symbolic link paths.
+    // let mut link_map: HashMap<_, HashSet<_>> = HashMap::new();
+
+    // id => replica.
+    let mut replicas: HashMap<_, Replica> = HashMap::new();
     debug!("replicas: {:?}", replicas);
 
-    // id => changed paths.
+    // replica id => changed paths.
     let mut pending_changes: HashMap<String, HashSet<PathBuf>> = HashMap::new();
     debug!("pending_changes: {:?}", pending_changes);
-
-    // real path => symbolic link paths.
-    let mut link_map: HashMap<_, HashSet<_>> = HashMap::new();
 
     let (tx, rx) = channel();
     let tx_clone = tx.clone();
@@ -114,7 +130,8 @@ fn main() -> Result<()> {
 
     send_cmd("VERSION", &["1"]);
 
-    let mut replica_path = String::new();
+    let mut replica_id = String::new();
+    let mut replica_path = PathBuf::new();
 
     loop {
         let event = rx.recv()?;
@@ -126,56 +143,92 @@ fn main() -> Result<()> {
 
                 match cmd.as_str() {
                     "VERSION" => {
-                        let version = args.remove(0);
+                        let version = &args[0];
                         if version != "1" {
                             bail!("Unexpected version: {:?}", version);
                         }
                     }
                     "START" => {
                         // Start observing replica.
-                        let replica_id = args.remove(0);
-                        replica_path = args.remove(0);
+                        replica_id = args[0].clone();
+                        replica_path = PathBuf::from(&args[1]);
+                        if let Some(dir) = args.get(2) {
+                            replica_path = replica_path.join(dir);
+                            // Clear previous observed paths.
+                            replicas
+                                .get_mut(&replica_id)
+                                .ok_or_else(|| {
+                                    format_err!("Replica with id {} not found!", replica_id)
+                                })?.dirs
+                                .retain(|path| {
+                                    if path.starts_with(&replica_path) {
+                                        let _ = watcher.unwatch(&path);
+                                        false
+                                    } else {
+                                        true
+                                    }
+                                })
+                        } else {
+                            replicas.insert(replica_id.clone(), Replica::new(&replica_path));
+                        }
+                        debug!("replicas: {:?}", replicas);
+                        send_ack();
+                    }
+                    "DIR" => {
+                        // Adding dirs to watch.
+                        let dir = args.pop_front().unwrap_or_default();
+                        let fullpath = PathBuf::from(&replica_path).join(dir);
 
-                        watcher.watch(&replica_path, RecursiveMode::Recursive)?;
-                        replicas.insert(replica_id.clone(), replica_path.clone());
+                        watcher.watch(&fullpath, RecursiveMode::NonRecursive)?;
+                        replicas
+                            .get_mut(&replica_id)
+                            .ok_or_else(|| {
+                                format_err!("Replica with id {} not found!", replica_id)
+                            })?.dirs
+                            .insert(fullpath);
                         debug!("replicas: {:?}", replicas);
                         send_ack();
                     }
                     "LINK" => {
                         // Follow a link.
-                        let path = args.remove(0);
-                        let fullpath = PathBuf::from(&replica_path).join(path);
-                        let realpath = canonicalize(&fullpath)?;
+                        // let path = args.remove(0);
+                        // let fullpath = PathBuf::from(&replica_path).join(path);
+                        // let realpath = canonicalize(&fullpath)?;
 
-                        watcher.watch(&realpath, RecursiveMode::Recursive)?;
-                        link_map.entry(realpath).or_default().insert(fullpath);
-                        send_ack();
-                    }
-                    "DIR" => {
+                        // watcher.watch(&realpath, RecursiveMode::Recursive)?;
+                        // link_map.entry(realpath).or_default().insert(fullpath);
                         send_ack();
                     }
                     "WAIT" => {
                         // Start waiting replica.
-                        let replica = args.remove(0);
-                        if !replicas.contains_key(&replica) {
-                            send_error(&format!("Unknown replica: {}", replica));
+                        let replica_id = &args[0];
+                        if !replicas.contains_key(replica_id) {
+                            send_error(&format!("Unknown replica: {}", replica_id));
                         }
                     }
                     "CHANGES" => {
                         // Request pending changes.
-                        let replica = args.remove(0);
-                        let replica_changes = pending_changes.remove(&replica).unwrap_or_default();
+                        let replica = &args[0];
+                        let replica_changes = pending_changes.remove(replica).unwrap_or_default();
                         for c in replica_changes {
-                            send_recursive(c.to_string_lossy().as_ref());
+                            send_recursive(&c.to_string_lossy());
                         }
                         debug!("pending_changes: {:?}", pending_changes);
                         send_done();
                     }
                     "RESET" => {
                         // Stop observing replica.
-                        let replica = args.remove(0);
-                        watcher.unwatch(&replica)?;
-                        replicas.remove(&replica);
+                        let replica_id = &args[0];
+                        for path in &replicas
+                            .get(replica_id)
+                            .ok_or_else(|| {
+                                format_err!("Replica with id {} not found!", replica_id)
+                            })?.dirs
+                        {
+                            // TODO: the same path might be watched for other replicas.
+                            watcher.unwatch(&path)?;
+                        }
+                        replicas.remove(replica_id);
                         debug!("replicas: {:?}", replicas);
                     }
                     "DEBUG" | "DONE" => {
@@ -192,35 +245,28 @@ fn main() -> Result<()> {
                 let mut matched_replica_ids = HashSet::new();
 
                 if let Some(file_path) = fsevent.path {
-                    let mut paths = HashSet::new();
-                    paths.insert(file_path.clone());
-                    for (realpath, links) in &link_map {
-                        if file_path.starts_with(realpath) {
-                            for link in links {
-                                paths.insert(
-                                    PathBuf::from(link).join(file_path.strip_prefix(realpath)?),
-                                );
-                            }
-                        }
-                    }
-
-                    for path in paths {
-                        for (replica_id, replica_path) in &replicas {
-                            if path.starts_with(replica_path) {
-                                matched_replica_ids.insert(replica_id.clone());
-                                let relative_path = path.strip_prefix(replica_path)?;
-                                pending_changes
-                                    .entry(replica_id.clone())
-                                    .or_default()
-                                    .insert(relative_path.into());
-                                debug!("pending_changes: {:?}", pending_changes);
-                            }
+                    for (id, replica) in &replicas {
+                        if replica.dirs.contains(&file_path) || file_path
+                            .parent()
+                            .map(|p| replica.dirs.contains(p))
+                            .unwrap_or_default()
+                        {
+                            matched_replica_ids.insert(id);
+                            let relative_path = file_path.strip_prefix(&replica.root)?;
+                            pending_changes
+                                .entry(id.clone())
+                                .or_default()
+                                .insert(relative_path.into());
                         }
                     }
                 }
 
-                for id in matched_replica_ids {
-                    send_changes(&id);
+                if matched_replica_ids.is_empty() {
+                    warn!("No replica found for event!")
+                }
+
+                for id in &matched_replica_ids {
+                    send_changes(id);
                 }
             }
         }
