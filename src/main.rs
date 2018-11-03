@@ -98,11 +98,9 @@ fn main() -> Result<()> {
 
     // id => replica.
     let mut replicas: HashMap<_, Replica> = HashMap::new();
-    debug!("replicas: {:?}", replicas);
 
-    // replica id => changed paths.
+    // replica id => changed paths (relative).
     let mut pending_changes: HashMap<String, HashSet<PathBuf>> = HashMap::new();
-    debug!("pending_changes: {:?}", pending_changes);
 
     let (tx, rx) = channel();
     let tx_clone = tx.clone();
@@ -147,33 +145,29 @@ fn main() -> Result<()> {
                         }
                     }
                     "START" => {
-                        // Start observing replica.
+                        // Reset watching of dir.
                         replica_id = args[0].clone();
                         replica_path = PathBuf::from(&args[1]);
                         if let Some(dir) = args.get(2) {
                             replica_path = replica_path.join(dir);
-                            // Clear previous observed paths.
-                            replicas
-                                .get_mut(&replica_id)
-                                .ok_or_else(|| {
-                                    format_err!("Replica with id {} not found!", replica_id)
-                                })?.dirs
-                                .retain(|path| {
-                                    if path.starts_with(&replica_path) {
-                                        let _ = watcher.unwatch(&path);
-                                        false
-                                    } else {
-                                        true
-                                    }
-                                })
-                        } else {
-                            replicas.insert(replica_id.clone(), Replica::new(&replica_path));
                         }
+                        replicas
+                            .entry(replica_id.clone())
+                            .or_insert_with(|| Replica::new(&replica_path))
+                            .dirs
+                            .retain(|path| {
+                                if path.starts_with(&replica_path) {
+                                    let _ = watcher.unwatch(&path);
+                                    false
+                                } else {
+                                    true
+                                }
+                            });
                         debug!("replicas: {:?}", replicas);
                         send_ack();
                     }
                     "DIR" => {
-                        // Adding dirs to watch.
+                        // Add sub-dir to watch list.
                         let dir = args.get(0).cloned().unwrap_or_default();
                         let fullpath = PathBuf::from(&replica_path).join(dir);
 
