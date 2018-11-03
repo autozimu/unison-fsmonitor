@@ -4,12 +4,10 @@ extern crate log;
 extern crate notify;
 extern crate percent_encoding;
 
-use failure::{bail, err_msg, format_err, Error};
+use failure::{bail, format_err, Error};
 use log::{debug, warn};
 use notify::{RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
-use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
-use std::fs::canonicalize;
 use std::io::{stdin, BufRead};
 use std::path::{Path, PathBuf};
 use std::process::exit;
@@ -58,14 +56,14 @@ fn send_error(msg: &str) {
     exit(1);
 }
 
-fn parse_input(input: &str) -> Result<(String, VecDeque<String>)> {
+fn parse_input(input: &str) -> Result<(String, Vec<String>)> {
     let mut cmd = String::new();
-    let mut args = VecDeque::new();
+    let mut args = vec![];
     for (idx, word) in input.split_whitespace().enumerate() {
         if idx == 0 {
             cmd = word.to_owned();
         } else {
-            args.push_back(decode(word).as_ref().to_owned())
+            args.push(decode(word).as_ref().to_owned())
         }
     }
     Ok((cmd, args))
@@ -96,7 +94,7 @@ fn main() -> Result<()> {
     env_logger::init();
 
     // real path => symbolic link paths.
-    // let mut link_map: HashMap<_, HashSet<_>> = HashMap::new();
+    let mut link_map: HashMap<_, HashSet<_>> = HashMap::new();
 
     // id => replica.
     let mut replicas: HashMap<_, Replica> = HashMap::new();
@@ -139,7 +137,7 @@ fn main() -> Result<()> {
         match event {
             Event::Input(input) => {
                 debug!("<< {}", input.trim());
-                let (cmd, mut args) = parse_input(&input)?;
+                let (cmd, args) = parse_input(&input)?;
 
                 match cmd.as_str() {
                     "VERSION" => {
@@ -176,7 +174,7 @@ fn main() -> Result<()> {
                     }
                     "DIR" => {
                         // Adding dirs to watch.
-                        let dir = args.pop_front().unwrap_or_default();
+                        let dir = args.get(0).cloned().unwrap_or_default();
                         let fullpath = PathBuf::from(&replica_path).join(dir);
 
                         watcher.watch(&fullpath, RecursiveMode::NonRecursive)?;
@@ -191,12 +189,14 @@ fn main() -> Result<()> {
                     }
                     "LINK" => {
                         // Follow a link.
-                        // let path = args.remove(0);
-                        // let fullpath = PathBuf::from(&replica_path).join(path);
-                        // let realpath = canonicalize(&fullpath)?;
+                        let path = args.get(0).cloned().unwrap_or_default();
+                        let fullpath = replica_path.join(path);
 
-                        // watcher.watch(&realpath, RecursiveMode::Recursive)?;
-                        // link_map.entry(realpath).or_default().insert(fullpath);
+                        link_map
+                            .entry(fullpath.canonicalize()?)
+                            .or_default()
+                            .insert(fullpath);
+                        debug!("link_map: {:?}", link_map);
                         send_ack();
                     }
                     "WAIT" => {
@@ -244,19 +244,31 @@ fn main() -> Result<()> {
 
                 let mut matched_replica_ids = HashSet::new();
 
-                if let Some(file_path) = fsevent.path {
-                    for (id, replica) in &replicas {
-                        if replica.dirs.contains(&file_path) || file_path
-                            .parent()
-                            .map(|p| replica.dirs.contains(p))
-                            .unwrap_or_default()
-                        {
-                            matched_replica_ids.insert(id);
-                            let relative_path = file_path.strip_prefix(&replica.root)?;
-                            pending_changes
-                                .entry(id.clone())
-                                .or_default()
-                                .insert(relative_path.into());
+                if let Some(path) = fsevent.path {
+                    let mut paths = vec![path.clone()];
+                    // Get all possible symbolic links for this path.
+                    for (realpath, links) in &link_map {
+                        if let Ok(postfix) = path.strip_prefix(realpath) {
+                            for link in links {
+                                paths.push(link.join(postfix));
+                            }
+                        }
+                    }
+
+                    for path in paths {
+                        for (id, replica) in &replicas {
+                            if replica.dirs.contains(&path) || path
+                                .parent()
+                                .map(|p| replica.dirs.contains(p))
+                                .unwrap_or_default()
+                            {
+                                matched_replica_ids.insert(id);
+                                let relative_path = path.strip_prefix(&replica.root)?;
+                                pending_changes
+                                    .entry(id.clone())
+                                    .or_default()
+                                    .insert(relative_path.into());
+                            }
                         }
                     }
                 }
