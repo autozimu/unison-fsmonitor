@@ -4,12 +4,12 @@ extern crate log;
 extern crate notify;
 extern crate percent_encoding;
 
-use failure::{bail, format_err, Error};
+use failure::{bail, Error};
 use log::{debug, warn};
 use notify::{RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
 use std::io::{stdin, BufRead};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::exit;
 use std::sync::mpsc::channel;
 use std::thread;
@@ -75,32 +75,17 @@ enum Event {
     FSEvent(RawEvent),
 }
 
-#[derive(Debug)]
-struct Replica {
-    root: PathBuf,
-    dirs: HashSet<PathBuf>,
-}
-
-impl Replica {
-    pub fn new<P: AsRef<Path>>(p: P) -> Replica {
-        Replica {
-            root: PathBuf::from(p.as_ref()),
-            dirs: HashSet::new(),
-        }
-    }
-}
-
 fn main() -> Result<()> {
     env_logger::init();
 
-    // real path => symbolic link paths.
+    // replica id => root path.
+    let mut replicas: HashMap<_, _> = HashMap::new();
+
+    // path => alias paths.
     let mut link_map: HashMap<_, HashSet<_>> = HashMap::new();
 
-    // id => replica.
-    let mut replicas: HashMap<_, Replica> = HashMap::new();
-
     // replica id => changed paths (relative).
-    let mut pending_changes: HashMap<String, HashSet<PathBuf>> = HashMap::new();
+    let mut pending_changes: HashMap<_, HashSet<PathBuf>> = HashMap::new();
 
     let (tx, rx) = channel();
     let tx_clone = tx.clone();
@@ -126,7 +111,6 @@ fn main() -> Result<()> {
 
     send_cmd("VERSION", &["1"]);
 
-    let mut replica_id = String::new();
     let mut replica_path = PathBuf::new();
 
     loop {
@@ -146,50 +130,29 @@ fn main() -> Result<()> {
                     }
                     "START" => {
                         // Reset watching of dir.
-                        replica_id = args[0].clone();
+                        let replica_id = args[0].clone();
                         replica_path = PathBuf::from(&args[1]);
+
                         if let Some(dir) = args.get(2) {
                             replica_path = replica_path.join(dir);
+                        } else {
+                            watcher.watch(&replica_path, RecursiveMode::Recursive)?;
+                            replicas.insert(replica_id, replica_path.clone());
+                            debug!("replicas: {:?}", replicas);
                         }
-                        replicas
-                            .entry(replica_id.clone())
-                            .or_insert_with(|| Replica::new(&replica_path))
-                            .dirs
-                            .retain(|path| {
-                                if path.starts_with(&replica_path) {
-                                    let _ = watcher.unwatch(&path);
-                                    false
-                                } else {
-                                    true
-                                }
-                            });
-                        debug!("replicas: {:?}", replicas);
                         send_ack();
                     }
                     "DIR" => {
                         // Add sub-dir to watch list.
-                        let dir = args.get(0).cloned().unwrap_or_default();
-                        let fullpath = PathBuf::from(&replica_path).join(dir);
-
-                        watcher.watch(&fullpath, RecursiveMode::NonRecursive)?;
-                        replicas
-                            .get_mut(&replica_id)
-                            .ok_or_else(|| {
-                                format_err!("Replica with id {} not found!", replica_id)
-                            })?.dirs
-                            .insert(fullpath);
-                        debug!("replicas: {:?}", replicas);
                         send_ack();
                     }
                     "LINK" => {
                         // Follow a link.
-                        let path = args.get(0).cloned().unwrap_or_default();
-                        let fullpath = replica_path.join(path);
+                        let path = replica_path.join(args.get(0).cloned().unwrap_or_default());
+                        let realpath = path.canonicalize()?;
 
-                        link_map
-                            .entry(fullpath.canonicalize()?)
-                            .or_default()
-                            .insert(fullpath);
+                        watcher.watch(&realpath, RecursiveMode::Recursive)?;
+                        link_map.entry(realpath).or_default().insert(path);
                         debug!("link_map: {:?}", link_map);
                         send_ack();
                     }
@@ -203,8 +166,7 @@ fn main() -> Result<()> {
                     "CHANGES" => {
                         // Request pending changes.
                         let replica = &args[0];
-                        let replica_changes = pending_changes.remove(replica).unwrap_or_default();
-                        for c in replica_changes {
+                        for c in pending_changes.remove(replica).unwrap_or_default() {
                             send_recursive(&c.to_string_lossy());
                         }
                         debug!("pending_changes: {:?}", pending_changes);
@@ -213,16 +175,10 @@ fn main() -> Result<()> {
                     "RESET" => {
                         // Stop observing replica.
                         let replica_id = &args[0];
-                        for path in &replicas
-                            .get(replica_id)
-                            .ok_or_else(|| {
-                                format_err!("Replica with id {} not found!", replica_id)
-                            })?.dirs
-                        {
+                        if let Some(path) = replicas.remove(replica_id) {
                             // TODO: the same path might be watched for other replicas.
                             watcher.unwatch(&path)?;
                         }
-                        replicas.remove(replica_id);
                         debug!("replicas: {:?}", replicas);
                     }
                     "DEBUG" | "DONE" => {
@@ -251,17 +207,12 @@ fn main() -> Result<()> {
 
                     for path in paths {
                         for (id, replica) in &replicas {
-                            if replica.dirs.contains(&path) || path
-                                .parent()
-                                .map(|p| replica.dirs.contains(p))
-                                .unwrap_or_default()
-                            {
+                            if path.starts_with(replica) {
                                 matched_replica_ids.insert(id);
-                                let relative_path = path.strip_prefix(&replica.root)?;
                                 pending_changes
                                     .entry(id.clone())
                                     .or_default()
-                                    .insert(relative_path.into());
+                                    .insert(path.strip_prefix(replica)?.into());
                             }
                         }
                     }
