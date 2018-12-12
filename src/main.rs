@@ -1,10 +1,4 @@
-extern crate env_logger;
-extern crate failure;
-extern crate log;
-extern crate notify;
-extern crate percent_encoding;
-
-use failure::{bail, Error};
+use failure::{bail, Fallible};
 use log::{debug, warn};
 use notify::{RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
@@ -13,8 +7,6 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::sync::mpsc::channel;
 use std::thread;
-
-type Result<R> = std::result::Result<R, Error>;
 
 fn encode(s: &str) -> impl AsRef<str> {
     percent_encoding::utf8_percent_encode(s, percent_encoding::SIMPLE_ENCODE_SET).to_string()
@@ -56,7 +48,7 @@ fn send_error(msg: &str) {
     exit(1);
 }
 
-fn parse_input(input: &str) -> Result<(String, Vec<String>)> {
+fn parse_input(input: &str) -> Fallible<(String, Vec<String>)> {
     let mut cmd = String::new();
     let mut args = vec![];
     for (idx, word) in input.split_whitespace().enumerate() {
@@ -75,7 +67,7 @@ enum Event {
     FSEvent(RawEvent),
 }
 
-fn main() -> Result<()> {
+fn main() -> Fallible<()> {
     env_logger::init();
 
     // replica id => root path.
@@ -89,7 +81,7 @@ fn main() -> Result<()> {
 
     let (tx, rx) = channel();
     let tx_clone = tx.clone();
-    thread::spawn(move || -> Result<()> {
+    thread::spawn(move || -> Fallible<()> {
         let stdin = stdin();
         let mut handle = stdin.lock();
 
@@ -103,7 +95,7 @@ fn main() -> Result<()> {
     let (fsevent_tx, fsevent_rx) = channel();
     let mut watcher: RecommendedWatcher = Watcher::new_raw(fsevent_tx)?;
     let tx_clone = tx.clone();
-    thread::spawn(move || -> Result<()> {
+    thread::spawn(move || -> Fallible<()> {
         loop {
             tx_clone.send(Event::FSEvent(fsevent_rx.recv()?))?;
         }

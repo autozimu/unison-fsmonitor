@@ -2,8 +2,9 @@
 name = "unison-fsmonitor"
 description = "unison-fsmonitor implementation"
 version = "0.1.0"
-authors = ["Junfeng Li <lijunfen@amazon.com>"]
+authors = ["Junfeng Li <autozimu@gmail.com>"]
 license = "MIT"
+edition = "2018"
 
 [dependencies]
 percent-encoding = "1"
