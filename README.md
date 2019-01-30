@@ -3,16 +3,20 @@
 ## Why
 `unison` doesn't include `unison-fsmonitor` for macOS, thus `-repeat watch` option doesn't work out of the box. This utility fills the gap.
 
+## Install
+```sh
+brew install autozimu/formulas/unison-fsmonitor
+```
+Alternatively if you have [cargo](https://github.com/rust-lang/cargo) installed,
+```sh
+cargo install unison-fsmonitor
+```
+
 ## Usage
-```
-cargo build --release
-ln -s $PWD/target/release/unison-fsmonitor /usr/local/bin/
-```
+Simply run unison with `-repeat watch` as argument or `repeat=watch` in config file.
 
 ## Debug
 ```
-cargo build
-ln -s $PWD/target/debug/unison-fsmonitor /usr/local/bin/
 RUST_LOG=debug unison
 ```
 
