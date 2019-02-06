@@ -15,6 +15,9 @@ cargo install unison-fsmonitor
 ## Usage
 Simply run unison with `-repeat watch` as argument or `repeat=watch` in config file.
 
+## Increase file watch limit on macOS
+See <https://facebook.github.io/watchman/docs/install.html#mac-os-file-descriptor-limits>
+
 ## Debug
 ```
 RUST_LOG=debug unison
