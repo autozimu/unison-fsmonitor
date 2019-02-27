@@ -127,11 +127,10 @@ fn main() -> Fallible<()> {
 
                         if let Some(dir) = args.get(2) {
                             replica_path = replica_path.join(dir);
-                        } else {
-                            watcher.watch(&replica_path, RecursiveMode::Recursive)?;
-                            replicas.insert(replica_id, replica_path.clone());
-                            debug!("replicas: {:?}", replicas);
                         }
+                        watcher.watch(&replica_path, RecursiveMode::Recursive)?;
+                        replicas.insert(replica_id, replica_path.clone());
+                        debug!("replicas: {:?}", replicas);
                         send_ack();
                     }
                     "DIR" => {
