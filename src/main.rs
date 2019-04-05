@@ -210,7 +210,7 @@ fn main() -> Fallible<()> {
                 }
 
                 if matched_replica_ids.is_empty() {
-                    warn!("No replica found for event!")
+                    info!("No replica found for event.")
                 }
 
                 for id in &matched_replica_ids {
