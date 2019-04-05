@@ -1,5 +1,5 @@
 use failure::{bail, Fallible};
-use log::{debug, warn};
+use log::{debug, info};
 use notify::{RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
 use std::io::{stdin, BufRead};
