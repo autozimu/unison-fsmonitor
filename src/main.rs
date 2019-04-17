@@ -70,8 +70,8 @@ enum Event {
 fn main() -> Fallible<()> {
     env_logger::init();
 
-    // replica id => root path.
-    let mut replicas: HashMap<_, _> = HashMap::new();
+    // replica id => paths.
+    let mut replicas: HashMap<_, HashSet<_>> = HashMap::new();
 
     // path => alias paths.
     let mut link_map: HashMap<_, HashSet<_>> = HashMap::new();
@@ -121,15 +121,30 @@ fn main() -> Fallible<()> {
                         }
                     }
                     "START" => {
-                        // Reset watching of dir.
+                        // Start or append watching dirs.
+                        // e.g.,
+                        // START 123 root
+                        // START 123 root subdir
                         let replica_id = args[0].clone();
                         replica_path = PathBuf::from(&args[1]);
 
                         if let Some(dir) = args.get(2) {
                             replica_path = replica_path.join(dir);
                         }
-                        watcher.watch(&replica_path, RecursiveMode::Recursive)?;
-                        replicas.insert(replica_id, replica_path.clone());
+                        let mut is_watched = false;
+                        for path in replicas.entry(replica_id.clone()).or_default().iter() {
+                            if replica_path.starts_with(path) {
+                                is_watched = true;
+                            }
+                        }
+                        if !is_watched {
+                            watcher.watch(&replica_path, RecursiveMode::Recursive)?;
+                            replicas
+                                .entry(replica_id)
+                                .or_default()
+                                .insert(replica_path.clone());
+                        }
+
                         debug!("replicas: {:?}", replicas);
                         send_ack();
                     }
@@ -166,9 +181,11 @@ fn main() -> Fallible<()> {
                     "RESET" => {
                         // Stop observing replica.
                         let replica_id = &args[0];
-                        if let Some(path) = replicas.remove(replica_id) {
+                        if let Some(paths) = replicas.remove(replica_id) {
                             // TODO: the same path might be watched for other replicas.
-                            watcher.unwatch(&path)?;
+                            for path in paths {
+                                watcher.unwatch(&path)?;
+                            }
                         }
                         debug!("replicas: {:?}", replicas);
                     }
@@ -197,13 +214,15 @@ fn main() -> Fallible<()> {
                     }
 
                     for path in paths {
-                        for (id, replica) in &replicas {
-                            if path.starts_with(replica) {
-                                matched_replica_ids.insert(id);
-                                pending_changes
-                                    .entry(id.clone())
-                                    .or_default()
-                                    .insert(path.strip_prefix(replica)?.into());
+                        for (id, replica_paths) in &replicas {
+                            for replica_path in replica_paths {
+                                if path.starts_with(replica_path) {
+                                    matched_replica_ids.insert(id);
+                                    pending_changes
+                                        .entry(id.clone())
+                                        .or_default()
+                                        .insert(path.strip_prefix(replica_path)?.into());
+                                }
                             }
                         }
                     }
