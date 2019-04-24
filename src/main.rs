@@ -2,8 +2,8 @@ use failure::{bail, Fallible};
 use log::{debug, info};
 use notify::{RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
-use std::io::{stdin, BufRead};
-use std::path::PathBuf;
+use std::io::{stdin, BufRead, Write};
+use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::sync::mpsc::channel;
 use std::thread;
@@ -67,50 +67,50 @@ enum Event {
     FSEvent(RawEvent),
 }
 
-fn main() -> Fallible<()> {
-    env_logger::init();
+type Id = String;
 
-    // replica id => paths.
-    let mut replicas: HashMap<_, HashSet<_>> = HashMap::new();
+#[derive(Debug, Default)]
+struct Replica {
+    pub paths: HashSet<PathBuf>,
+    pub pending_changes: HashSet<PathBuf>,
+}
 
-    // path => alias paths.
-    let mut link_map: HashMap<_, HashSet<_>> = HashMap::new();
-
-    // replica id => changed paths (relative).
-    let mut pending_changes: HashMap<_, HashSet<PathBuf>> = HashMap::new();
-
-    let (tx, rx) = channel();
-    let tx_clone = tx.clone();
-    thread::spawn(move || -> Fallible<()> {
-        let stdin = stdin();
-        let mut handle = stdin.lock();
-
-        loop {
-            let mut input = String::new();
-            handle.read_line(&mut input)?;
-            tx_clone.send(Event::Input(input))?;
+impl Replica {
+    /// Check if path is contained in this replica.
+    pub fn contains_path(&self, path: &Path) -> bool {
+        for base in &self.paths {
+            if path.starts_with(base) {
+                return true;
+            }
         }
-    });
+        false
+    }
+}
 
-    let (fsevent_tx, fsevent_rx) = channel();
-    let mut watcher: RecommendedWatcher = Watcher::new_raw(fsevent_tx)?;
-    let tx_clone = tx.clone();
-    thread::spawn(move || -> Fallible<()> {
-        loop {
-            tx_clone.send(Event::FSEvent(fsevent_rx.recv()?))?;
+struct Monitor<W: Write> {
+    pub current_path: PathBuf,
+    pub replicas: HashMap<Id, Replica>,
+    pub link_map: HashMap<PathBuf, HashSet<PathBuf>>,
+    pub watcher: RecommendedWatcher,
+    pub writer: W,
+}
+
+impl<W: Write> Monitor<W> {
+    pub fn new(watcher: RecommendedWatcher, writer: W) -> Self {
+        Self {
+            current_path: PathBuf::new(),
+            replicas: HashMap::new(),
+            link_map: HashMap::new(),
+            watcher,
+            writer,
         }
-    });
+    }
 
-    send_cmd("VERSION", &["1"]);
-
-    let mut replica_path = PathBuf::new();
-
-    loop {
-        let event = rx.recv()?;
+    pub fn handle_event(&mut self, event: Event) -> Fallible<()> {
+        debug!("event: {:?}", event);
 
         match event {
             Event::Input(input) => {
-                debug!("<< {}", input.trim());
                 let (cmd, args) = parse_input(&input)?;
 
                 match cmd.as_str() {
@@ -126,26 +126,27 @@ fn main() -> Fallible<()> {
                         // START 123 root
                         // START 123 root subdir
                         let replica_id = args[0].clone();
-                        replica_path = PathBuf::from(&args[1]);
+                        self.current_path = PathBuf::from(&args[1]);
 
                         if let Some(dir) = args.get(2) {
-                            replica_path = replica_path.join(dir);
-                        }
-                        let mut is_watched = false;
-                        for path in replicas.entry(replica_id.clone()).or_default().iter() {
-                            if replica_path.starts_with(path) {
-                                is_watched = true;
-                            }
-                        }
-                        if !is_watched {
-                            watcher.watch(&replica_path, RecursiveMode::Recursive)?;
-                            replicas
-                                .entry(replica_id)
-                                .or_default()
-                                .insert(replica_path.clone());
+                            self.current_path = self.current_path.join(dir);
                         }
 
-                        debug!("replicas: {:?}", replicas);
+                        let is_watched = self
+                            .replicas
+                            .values()
+                            .any(|replica| replica.contains_path(&self.current_path));
+                        if !is_watched {
+                            self.watcher
+                                .watch(&self.current_path, RecursiveMode::Recursive)?;
+                            self.replicas
+                                .entry(replica_id)
+                                .or_default()
+                                .paths
+                                .insert(self.current_path.clone());
+                        }
+
+                        debug!("replicas: {:?}", self.replicas);
                         send_ack();
                     }
                     "DIR" => {
@@ -154,58 +155,64 @@ fn main() -> Fallible<()> {
                     }
                     "LINK" => {
                         // Follow a link.
-                        let path = replica_path.join(args.get(0).cloned().unwrap_or_default());
+                        let path = self
+                            .current_path
+                            .join(args.get(0).cloned().unwrap_or_default());
                         let realpath = path.canonicalize()?;
 
-                        watcher.watch(&realpath, RecursiveMode::Recursive)?;
-                        link_map.entry(realpath).or_default().insert(path);
-                        debug!("link_map: {:?}", link_map);
+                        self.watcher.watch(&realpath, RecursiveMode::Recursive)?;
+                        self.link_map.entry(realpath).or_default().insert(path);
+                        debug!("link_map: {:?}", self.link_map);
                         send_ack();
                     }
                     "WAIT" => {
                         // Start waiting replica.
                         let replica_id = &args[0];
-                        if !replicas.contains_key(replica_id) {
+                        if !self.replicas.contains_key(replica_id) {
                             send_error(&format!("Unknown replica: {}", replica_id));
                         }
                     }
                     "CHANGES" => {
                         // Request pending changes.
-                        let replica = &args[0];
-                        for c in pending_changes.remove(replica).unwrap_or_default() {
-                            send_recursive(&c.to_string_lossy());
+                        let replica_id = &args[0];
+                        if let Some(replica) = self.replicas.get_mut(replica_id) {
+                            for c in replica.pending_changes.drain() {
+                                send_recursive(&c.to_string_lossy());
+                            }
                         }
-                        debug!("pending_changes: {:?}", pending_changes);
                         send_done();
                     }
                     "RESET" => {
                         // Stop observing replica.
                         let replica_id = &args[0];
-                        if let Some(paths) = replicas.remove(replica_id) {
-                            // TODO: the same path might be watched for other replicas.
-                            for path in paths {
-                                watcher.unwatch(&path)?;
+                        if let Some(replica) = self.replicas.remove(replica_id) {
+                            for path in replica.paths {
+                                let is_watched = self
+                                    .replicas
+                                    .values()
+                                    .any(|replica| replica.contains_path(&self.current_path));
+                                if !is_watched {
+                                    self.watcher.unwatch(&path)?;
+                                }
                             }
                         }
-                        debug!("replicas: {:?}", replicas);
+                        debug!("replicas: {:?}", self.replicas);
                     }
                     "DEBUG" | "DONE" => {
                         // TODO: update debug level.
                     }
                     _ => {
-                        send_error(&format!("Unexpected cmd: {}", cmd));
+                        send_error(&format!("Unrecognized cmd: {}", cmd));
                     }
                 }
             }
             Event::FSEvent(fsevent) => {
-                debug!("FS event: {:?}", fsevent);
-
                 let mut matched_replica_ids = HashSet::new();
 
                 if let Some(path) = fsevent.path {
                     let mut paths = vec![path.clone()];
                     // Get all possible symbolic links for this path.
-                    for (realpath, links) in &link_map {
+                    for (realpath, links) in &self.link_map {
                         if let Ok(postfix) = path.strip_prefix(realpath) {
                             for link in links {
                                 paths.push(link.join(postfix));
@@ -213,15 +220,12 @@ fn main() -> Fallible<()> {
                         }
                     }
 
-                    for path in paths {
-                        for (id, replica_paths) in &replicas {
-                            for replica_path in replica_paths {
-                                if path.starts_with(replica_path) {
+                    for (id, replica) in self.replicas.iter_mut() {
+                        for path in &paths {
+                            for dir in &replica.paths {
+                                if let Ok(relative_path) = path.strip_prefix(dir) {
                                     matched_replica_ids.insert(id);
-                                    pending_changes
-                                        .entry(id.clone())
-                                        .or_default()
-                                        .insert(path.strip_prefix(replica_path)?.into());
+                                    replica.pending_changes.insert(relative_path.into());
                                 }
                             }
                         }
@@ -237,5 +241,46 @@ fn main() -> Fallible<()> {
                 }
             }
         }
+
+        Ok(())
     }
+}
+
+fn main() -> Fallible<()> {
+    env_logger::init();
+
+    let (fsevent_tx, fsevent_rx) = channel();
+    let watcher: RecommendedWatcher = Watcher::new_raw(fsevent_tx)?;
+
+    let mut monitor = Monitor::new(watcher, std::io::stdout());
+
+    let (tx, rx) = channel();
+
+    let tx_clone = tx.clone();
+    thread::spawn(move || -> Fallible<()> {
+        let stdin = stdin();
+        let mut handle = stdin.lock();
+
+        loop {
+            let mut input = String::new();
+            handle.read_line(&mut input)?;
+            tx_clone.send(Event::Input(input))?;
+        }
+    });
+
+    let tx_clone = tx.clone();
+    thread::spawn(move || -> Fallible<()> {
+        for event in fsevent_rx {
+            tx_clone.send(Event::FSEvent(event))?;
+        }
+        Ok(())
+    });
+
+    send_cmd("VERSION", &["1"]);
+
+    for event in rx {
+        monitor.handle_event(event)?;
+    }
+
+    Ok(())
 }
