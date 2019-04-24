@@ -1,8 +1,8 @@
 use failure::{bail, Fallible};
 use log::{debug, info};
-use notify::{RawEvent, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{RawEvent, RecommendedWatcher, RecursiveMode};
 use std::collections::{HashMap, HashSet};
-use std::io::{stdin, BufRead, Write};
+use std::io::{stdin, stdout, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::sync::mpsc::channel;
@@ -67,6 +67,26 @@ enum Event {
     FSEvent(RawEvent),
 }
 
+trait Watch {
+    fn watch<P: AsRef<Path>>(&mut self, _path: P, _recursive_mode: RecursiveMode) -> Fallible<()> {
+        Ok(())
+    }
+
+    fn unwatch<P: AsRef<Path>>(&mut self, _path: P) -> Fallible<()> {
+        Ok(())
+    }
+}
+
+impl Watch for RecommendedWatcher {
+    fn watch<P: AsRef<Path>>(&mut self, path: P, recursive_mode: RecursiveMode) -> Fallible<()> {
+        Ok(notify::Watcher::watch(self, path, recursive_mode)?)
+    }
+
+    fn unwatch<P: AsRef<Path>>(&mut self, path: P) -> Fallible<()> {
+        Ok(notify::Watcher::unwatch(self, path)?)
+    }
+}
+
 type Id = String;
 
 #[derive(Debug, Default)]
@@ -87,16 +107,18 @@ impl Replica {
     }
 }
 
-struct Monitor<W: Write> {
+struct Monitor<WATCH: Watch, WRITE: Write> {
     pub current_path: PathBuf,
     pub replicas: HashMap<Id, Replica>,
     pub link_map: HashMap<PathBuf, HashSet<PathBuf>>,
-    pub watcher: RecommendedWatcher,
-    pub writer: W,
+    pub watcher: WATCH,
+    pub writer: WRITE,
 }
 
-impl<W: Write> Monitor<W> {
-    pub fn new(watcher: RecommendedWatcher, writer: W) -> Self {
+impl<WATCH: Watch, WRITE: Write> Monitor<WATCH, WRITE> {
+    pub fn new(watcher: WATCH, writer: WRITE) -> Self {
+        send_cmd("VERSION", &["1"]);
+
         Self {
             current_path: PathBuf::new(),
             replicas: HashMap::new(),
@@ -104,6 +126,12 @@ impl<W: Write> Monitor<W> {
             watcher,
             writer,
         }
+    }
+
+    pub fn contains_path(&self, path: &Path) -> bool {
+        self.replicas
+            .values()
+            .any(|replica| replica.contains_path(path))
     }
 
     pub fn handle_event(&mut self, event: Event) -> Fallible<()> {
@@ -132,11 +160,7 @@ impl<W: Write> Monitor<W> {
                             self.current_path = self.current_path.join(dir);
                         }
 
-                        let is_watched = self
-                            .replicas
-                            .values()
-                            .any(|replica| replica.contains_path(&self.current_path));
-                        if !is_watched {
+                        if !self.contains_path(&self.current_path) {
                             self.watcher
                                 .watch(&self.current_path, RecursiveMode::Recursive)?;
                             self.replicas
@@ -187,11 +211,7 @@ impl<W: Write> Monitor<W> {
                         let replica_id = &args[0];
                         if let Some(replica) = self.replicas.remove(replica_id) {
                             for path in replica.paths {
-                                let is_watched = self
-                                    .replicas
-                                    .values()
-                                    .any(|replica| replica.contains_path(&self.current_path));
-                                if !is_watched {
+                                if !self.contains_path(&path) {
                                     self.watcher.unwatch(&path)?;
                                 }
                             }
@@ -246,13 +266,53 @@ impl<W: Write> Monitor<W> {
     }
 }
 
+#[cfg(test)]
+mod test {
+    use crate::*;
+
+    struct Watcher {}
+
+    impl Watch for Watcher {}
+
+    #[test]
+    fn test_version() {
+        let mut monitor = Monitor::new(Watcher {}, stdout());
+
+        monitor
+            .handle_event(Event::Input("VERSION 1".into()))
+            .unwrap();
+    }
+
+    #[test]
+    fn test_watch_path() {
+        let mut monitor = Monitor::new(Watcher {}, stdout());
+
+        monitor
+            .handle_event(Event::Input("START 123 /tmp/sample".into()))
+            .unwrap();
+
+        assert!(monitor.contains_path(&PathBuf::from("/tmp/sample")));
+    }
+
+    #[test]
+    fn test_watch_path_with_subpath() {
+        let mut monitor = Monitor::new(Watcher {}, stdout());
+
+        monitor
+            .handle_event(Event::Input("START 123 /tmp/sample subdir".into()))
+            .unwrap();
+
+        assert!(monitor.contains_path(&PathBuf::from("/tmp/sample/subdir")));
+    }
+}
+
 fn main() -> Fallible<()> {
     env_logger::init();
 
     let (fsevent_tx, fsevent_rx) = channel();
-    let watcher: RecommendedWatcher = Watcher::new_raw(fsevent_tx)?;
+    let watcher: RecommendedWatcher = notify::Watcher::new_raw(fsevent_tx)?;
 
-    let mut monitor = Monitor::new(watcher, std::io::stdout());
+    let mut monitor = Monitor::new(watcher, stdout());
 
     let (tx, rx) = channel();
 
@@ -275,8 +335,6 @@ fn main() -> Fallible<()> {
         }
         Ok(())
     });
-
-    send_cmd("VERSION", &["1"]);
 
     for event in rx {
         monitor.handle_event(event)?;
