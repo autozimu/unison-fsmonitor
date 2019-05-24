@@ -68,21 +68,21 @@ enum Event {
 }
 
 trait Watch {
-    fn watch<P: AsRef<Path>>(&mut self, _path: P, _recursive_mode: RecursiveMode) -> Fallible<()> {
+    fn watch(&mut self, _path: &Path, _recursive_mode: RecursiveMode) -> Fallible<()> {
         Ok(())
     }
 
-    fn unwatch<P: AsRef<Path>>(&mut self, _path: P) -> Fallible<()> {
+    fn unwatch(&mut self, _path: &Path) -> Fallible<()> {
         Ok(())
     }
 }
 
 impl Watch for RecommendedWatcher {
-    fn watch<P: AsRef<Path>>(&mut self, path: P, recursive_mode: RecursiveMode) -> Fallible<()> {
+    fn watch(&mut self, path: &Path, recursive_mode: RecursiveMode) -> Fallible<()> {
         Ok(notify::Watcher::watch(self, path, recursive_mode)?)
     }
 
-    fn unwatch<P: AsRef<Path>>(&mut self, path: P) -> Fallible<()> {
+    fn unwatch(&mut self, path: &Path) -> Fallible<()> {
         Ok(notify::Watcher::unwatch(self, path)?)
     }
 }
@@ -98,12 +98,7 @@ struct Replica {
 impl Replica {
     /// Check if path is contained in this replica.
     pub fn contains_path(&self, path: &Path) -> bool {
-        for base in &self.paths {
-            if path.starts_with(base) {
-                return true;
-            }
-        }
-        false
+        self.paths.iter().any(|base| path.starts_with(base))
     }
 }
 
