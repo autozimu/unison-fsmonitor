@@ -91,14 +91,14 @@ type Id = String;
 
 #[derive(Debug, Default)]
 struct Replica {
-    pub paths: HashSet<PathBuf>,
+    pub paths: HashMap<PathBuf, Option<PathBuf>>,
     pub pending_changes: HashSet<PathBuf>,
 }
 
 impl Replica {
     /// Check if path is contained in this replica.
     pub fn contains_path(&self, path: &Path) -> bool {
-        self.paths.iter().any(|base| path.starts_with(base))
+        self.paths.keys().any(|base| path.starts_with(base))
     }
 }
 
@@ -149,9 +149,11 @@ impl<WATCH: Watch, WRITE: Write> Monitor<WATCH, WRITE> {
                         // START 123 root
                         // START 123 root subdir
                         let replica_id = args[0].clone();
+                        let mut subpath = None;
                         self.current_path = PathBuf::from(&args[1]);
 
                         if let Some(dir) = args.get(2) {
+                            subpath = Some(PathBuf::from(dir));
                             self.current_path = self.current_path.join(dir);
                         }
 
@@ -162,7 +164,7 @@ impl<WATCH: Watch, WRITE: Write> Monitor<WATCH, WRITE> {
                                 .entry(replica_id)
                                 .or_default()
                                 .paths
-                                .insert(self.current_path.clone());
+                                .insert(self.current_path.clone(), subpath);
                         }
 
                         debug!("replicas: {:?}", self.replicas);
@@ -205,7 +207,7 @@ impl<WATCH: Watch, WRITE: Write> Monitor<WATCH, WRITE> {
                         // Stop observing replica.
                         let replica_id = &args[0];
                         if let Some(replica) = self.replicas.remove(replica_id) {
-                            for path in replica.paths {
+                            for path in replica.paths.keys() {
                                 if !self.contains_path(&path) {
                                     self.watcher.unwatch(&path)?;
                                 }
@@ -237,10 +239,13 @@ impl<WATCH: Watch, WRITE: Write> Monitor<WATCH, WRITE> {
 
                     for (id, replica) in self.replicas.iter_mut() {
                         for path in &paths {
-                            for dir in &replica.paths {
-                                if let Ok(relative_path) = path.strip_prefix(dir) {
+                            for (dir, subdir_name) in &replica.paths {
+                                if let Ok(relative_path) = path.strip_prefix(&dir) {
                                     matched_replica_ids.insert(id);
-                                    replica.pending_changes.insert(relative_path.into());
+                                    replica.pending_changes.insert(match subdir_name {
+                                        None    => relative_path.into(),
+                                        Some(s) => s.join(relative_path).into(),
+                                    });
                                 }
                             }
                         }
