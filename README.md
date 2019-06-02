@@ -23,5 +23,6 @@ See <https://facebook.github.io/watchman/docs/install.html#mac-os-file-descripto
 RUST_LOG=debug unison
 ```
 
-## Credit
+## References
+- <https://github.com/bcpierce00/unison/blob/master/src/fsmonitor/watchercommon.ml>
 - <https://github.com/hnsl/unox>
