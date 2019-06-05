@@ -376,17 +376,33 @@ mod test {
         monitor.handle_event(Event::Input("DIR\n".into())).unwrap();
 
         monitor.writer.set_position(0);
-        assert_eq!(monitor.writer.lines().collect::<Result<Vec<String>, _>>().unwrap(), vec!["OK"]);
+        assert_eq!(
+            monitor
+                .writer
+                .lines()
+                .collect::<Result<Vec<String>, _>>()
+                .unwrap(),
+            vec!["OK"]
+        );
     }
 
     #[test]
     fn test_dir_with_dir() {
         let mut monitor = Monitor::new(Watcher {}, Cursor::new(vec![]));
 
-        monitor.handle_event(Event::Input("DIR dir\n".into())).unwrap();
+        monitor
+            .handle_event(Event::Input("DIR dir\n".into()))
+            .unwrap();
 
         monitor.writer.set_position(0);
-        assert_eq!(monitor.writer.lines().collect::<Result<Vec<String>, _>>().unwrap(), vec!["OK"]);
+        assert_eq!(
+            monitor
+                .writer
+                .lines()
+                .collect::<Result<Vec<String>, _>>()
+                .unwrap(),
+            vec!["OK"]
+        );
     }
 
     #[test]
