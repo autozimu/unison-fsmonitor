@@ -1,7 +1,7 @@
 [package]
 name = "unison-fsmonitor"
 description = "unison-fsmonitor implementation"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Junfeng Li <autozimu@gmail.com>"]
 license = "MIT"
 edition = "2018"
