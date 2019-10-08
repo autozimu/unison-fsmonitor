@@ -5,7 +5,7 @@
 
 ## Install
 ```sh
-brew install autozimu/formulas/unison-fsmonitor
+brew install autozimu/homebrew-formulas/unison-fsmonitor
 ```
 Alternatively if you have [cargo](https://github.com/rust-lang/cargo) installed,
 ```sh
