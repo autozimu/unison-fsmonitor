@@ -1,0 +1,39 @@
+name: release
+
+on:
+  push:
+    tags:
+    - 'v*'
+
+jobs:
+  release:
+    runs-on: [macOS-10.14]
+    steps:
+    - name: checkout
+      uses: actions/checkout@v1
+    - name: install rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+    - name: build
+      run: cargo build --release --verbose
+    - name: tar
+      run: cd target/release && tar -cvf unison-fsmonitor.tar.gz unison-fsmonitor
+    - name: create release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+    - name: upload release asset
+      uses: actions/upload-release-asset@v1.0.1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./target/release/unison-fsmonitor.tar.gz
+        asset_name: unison-fsmonitor.tar.gz
+        asset_content_type: application/gzip

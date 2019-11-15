@@ -6,6 +6,9 @@ authors = ["Junfeng Li <autozimu@gmail.com>"]
 license = "MIT"
 edition = "2018"
 
+[package.metadata.release]
+no-dev-version = true
+
 [dependencies]
 percent-encoding = "1"
 failure = "0"
@@ -15,6 +18,3 @@ env_logger = "0"
 
 [profile.release]
 debug = true
-
-[package.metadata.release]
-no-dev-version = true
