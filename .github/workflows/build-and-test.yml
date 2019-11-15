@@ -6,12 +6,14 @@ jobs:
   build-and-test:
     runs-on: [macOS-10.14]
     steps:
-    - uses: actions/checkout@v1
-    - uses: actions-rs/toolchain@v1
+    - name: checkout
+      uses: actions/checkout@v1
+    - name: install rust toolchain
+      uses: actions-rs/toolchain@v1
       with:
         toolchain: stable
         profile: minimal
-    - name: Build
+    - name: build
       run: cargo build --verbose
-    - name: Test
+    - name: test
       run: cargo test --verbose

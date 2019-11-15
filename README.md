@@ -1,4 +1,5 @@
 # unison-fsmonitor
+[![Github Actions Status](https://github.com/autozimu/unison-fsmonitor/workflows/build-and-test/badge.svg)](https://github.com/autozimu/unison-fsmonitor/actions?query=workflow%3Abuild-and-test)
 
 ## Why
 `unison` doesn't include `unison-fsmonitor` for macOS, thus `-repeat watch` option doesn't work out of the box. This utility fills the gap. This implementation was originally made for macOS but shall work on other platforms as well like Linux, Windows.
