@@ -3,12 +3,14 @@ name: build-and-test
 on: [push]
 
 jobs:
-  build:
-
+  build-and-test:
     runs-on: [macOS-10.14]
-
     steps:
     - uses: actions/checkout@v1
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
     - name: Build
       run: cargo build --verbose
     - name: Test
