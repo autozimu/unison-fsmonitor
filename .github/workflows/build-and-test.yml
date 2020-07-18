@@ -8,12 +8,11 @@ jobs:
     steps:
     - name: checkout
       uses: actions/checkout@v1
-    - name: install rust toolchain
-      uses: actions-rs/toolchain@v1
+    - name: install nix
+      uses: cachix/install-nix-action@v10
       with:
-        toolchain: stable
-        profile: minimal
+        nix_path: nixpkgs=channel:nixos-unstable
     - name: build
-      run: cargo build --verbose
+      run: nix-shell --run "cargo build --verbose"
     - name: test
-      run: cargo test --verbose
+      run: nix-shell --run "cargo test --verbose"
