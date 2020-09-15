@@ -1,5 +1,3 @@
-name: release
-
 on:
   push:
     tags:
@@ -7,29 +5,19 @@ on:
 
 jobs:
   release:
-    runs-on: [macOS-10.14]
+    runs-on: macOS-10.14
     steps:
-    - name: checkout
-      uses: actions/checkout@v1
-    - name: install rust toolchain
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        profile: minimal
-    - name: build
-      run: cargo build --release --verbose
-    - name: tar
-      run: cd target/release && tar -cvf unison-fsmonitor.tar.gz unison-fsmonitor
-    - name: create release
+    - uses: actions/checkout@v1
+    - run: cargo build --release --verbose
+    - run: cd target/release && tar -cvf unison-fsmonitor.tar.gz unison-fsmonitor
+    - uses: actions/create-release@v1
       id: create_release
-      uses: actions/create-release@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: ${{ github.ref }}
         release_name: Release ${{ github.ref }}
-    - name: upload release asset
-      uses: actions/upload-release-asset@v1.0.1
+    - uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
