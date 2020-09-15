@@ -1,3 +1,5 @@
+name: CD
+
 on:
   push:
     tags:
@@ -5,7 +7,7 @@ on:
 
 jobs:
   release:
-    runs-on: macOS-10.14
+    runs-on: macOS-10.15
     steps:
     - uses: actions/checkout@v1
     - run: cargo build --release --verbose
