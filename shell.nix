@@ -9,6 +9,4 @@ pkgs.mkShell {
   ]);
 
   NIX_LDFLAGS = pkgs.lib.optionalString pkgs.stdenv.isDarwin "-framework CoreFoundation";
-
-  RUST_BACKTRACE = 1;
 }
