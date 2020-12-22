@@ -257,7 +257,7 @@ impl<WATCH: Watch, WRITE: Write> Monitor<WATCH, WRITE> {
         self.send_cmd("OK", &[]);
     }
 
-    fn send_changes(&mut self, replica: &Id) {
+    fn send_changes(&mut self, replica: &str) {
         self.send_cmd("CHANGES", &[replica]);
     }
 
@@ -508,10 +508,9 @@ fn main() -> Fallible<()> {
         }
     });
 
-    let tx_clone = tx.clone();
     thread::spawn(move || -> Fallible<()> {
         for event in fsevent_rx {
-            tx_clone.send(Event::FSEvent(event))?;
+            tx.send(Event::FSEvent(event))?;
         }
         Ok(())
     });
