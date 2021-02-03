@@ -6,7 +6,7 @@ pkgs.rustPlatform.buildRustPackage {
   src = ./.;
   cargoSha256 = "0xj5hincwm3zr4bkkcf60971595fl9cjib7kf5pil7x75f29l8gj";
 
-  buildInputs = pkgs.stdenv.lib.optionals pkgs.stdenv.isDarwin [
+  buildInputs = pkgs.stdenvNoCC.lib.optionals pkgs.stdenvNoCC.isDarwin [
     pkgs.darwin.apple_sdk.frameworks.CoreServices
   ];
 }
