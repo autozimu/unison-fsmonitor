@@ -4,13 +4,13 @@ description = "unison-fsmonitor implementation"
 version = "0.2.3"
 authors = ["Junfeng Li <autozimu@gmail.com>"]
 license = "MIT"
-edition = "2018"
+edition = "2021"
 
 [package.metadata.release]
 no-dev-version = true
 
 [dependencies]
-percent-encoding = "1"
+percent-encoding = "2"
 failure = { version = "0", default-features = false, features = ["std"] }
 notify = "4"
 log = "0"

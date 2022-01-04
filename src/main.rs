@@ -9,7 +9,7 @@ use std::sync::mpsc::channel;
 use std::thread;
 
 fn encode(s: &str) -> impl AsRef<str> {
-    percent_encoding::utf8_percent_encode(s, percent_encoding::SIMPLE_ENCODE_SET).to_string()
+    percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
 
 fn decode<'a>(s: &'a str) -> impl AsRef<str> + 'a {
