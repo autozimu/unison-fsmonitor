@@ -1,13 +1,14 @@
 [package]
 name = "unison-fsmonitor"
 description = "unison-fsmonitor implementation"
+homepage = "https://github.com/autozimu/unison-fsmonitor"
 version = "0.2.3"
 authors = ["Junfeng Li <autozimu@gmail.com>"]
 license = "MIT"
 edition = "2021"
 
 [package.metadata.release]
-no-dev-version = true
+dev-version = false
 
 [dependencies]
 percent-encoding = "2"
