@@ -479,10 +479,7 @@ mod test {
             vec![
                 "OK",
                 &format!("CHANGES {}", id),
-                &format!(
-                    "RECURSIVE {}",
-                    PathBuf::from(subdir).join(filename).to_string_lossy()
-                ),
+                &format!("RECURSIVE {}%2F{}", subdir, filename),
                 "DONE"
             ]
         );
