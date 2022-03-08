@@ -12,6 +12,11 @@ fn encode(s: &str) -> impl AsRef<str> {
     percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
 
+#[test]
+fn test_encode() {
+    assert_eq!(encode("before%after").as_ref(), "before%25after");
+}
+
 fn decode<'a>(s: &'a str) -> impl AsRef<str> + 'a {
     percent_encoding::percent_decode(s.as_bytes()).decode_utf8_lossy()
 }
