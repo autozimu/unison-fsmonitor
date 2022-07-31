@@ -14,8 +14,8 @@ dev-version = false
 percent-encoding = "2"
 failure = { version = "0", default-features = false, features = ["std"] }
 notify = "4"
-log = "0"
-env_logger = "0"
+log = "0.4"
+env_logger = "0.9"
 
 [profile.dev]
 split-debuginfo = "unpacked"
