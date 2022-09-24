@@ -160,9 +160,11 @@ impl<WATCH: Watch, WRITE: Write> Monitor<WATCH, WRITE> {
                     }
                     "LINK" => {
                         // Follow a link.
-                        let path = self
-                            .current_path
-                            .join(args.get(0).cloned().unwrap_or_default());
+                        let path = if let Some(arg) = args.get(0) {
+                            self.current_path.join(arg)
+                        } else {
+                            self.current_path.clone()
+                        };
                         let realpath = path.canonicalize()?;
 
                         self.watcher.watch(&realpath, RecursiveMode::Recursive)?;
@@ -407,6 +409,36 @@ mod test {
                 .collect::<Result<Vec<String>, _>>()
                 .unwrap(),
             vec!["OK"]
+        );
+    }
+
+    #[test]
+    fn test_follow_link() {
+        let mut monitor = Monitor::new(Watcher {}, Cursor::new(vec![]));
+        let id = "123";
+        let root = PathBuf::from("/usr/bin");
+        let file = PathBuf::from("env");
+
+        monitor
+            .handle_event(Event::Input(format!(
+                "START {} {} {}\n",
+                id,
+                root.to_string_lossy(),
+                file.to_string_lossy()
+            )))
+            .unwrap();
+        monitor
+            .handle_event(Event::Input(format!("LINK\n",)))
+            .unwrap();
+
+        monitor.writer.set_position(0);
+        assert_eq!(
+            monitor
+                .writer
+                .lines()
+                .collect::<Result<Vec<String>, _>>()
+                .unwrap(),
+            vec!["OK", "OK"]
         );
     }
 

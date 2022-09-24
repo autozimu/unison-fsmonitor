@@ -34,5 +34,6 @@ RUST_LOG=debug unison
 
 ## References
 
+- Protocol <https://github.com/bcpierce00/unison/blob/af8669bb26f88e85bdc37cb1ff23d9bb0685a1e2/src/fswatch.ml>
 - <https://github.com/bcpierce00/unison/blob/master/src/fsmonitor/watchercommon.ml>
 - <https://github.com/hnsl/unox>
