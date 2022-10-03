@@ -2,7 +2,7 @@
 name = "unison-fsmonitor"
 description = "unison-fsmonitor implementation"
 homepage = "https://github.com/autozimu/unison-fsmonitor"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Junfeng Li <autozimu@gmail.com>"]
 license = "MIT"
 edition = "2021"
