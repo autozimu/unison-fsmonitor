@@ -1,10 +1,9 @@
-use failure::{bail, Fallible};
-use log::{debug, info};
+use failure::{bail, Fallible, ResultExt};
+use log::{debug, error, info};
 use notify::{RawEvent, RecommendedWatcher, RecursiveMode};
 use std::collections::{HashMap, HashSet};
 use std::io::{stdin, stdout, BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::process::exit;
 use std::sync::mpsc::channel;
 use std::thread;
 
@@ -165,7 +164,9 @@ impl<WATCH: Watch, WRITE: Write> Monitor<WATCH, WRITE> {
                         } else {
                             self.current_path.clone()
                         };
-                        let realpath = path.canonicalize()?;
+                        let realpath = path.canonicalize().with_context(|e| {
+                            format!("Unable to canonicalize path={:?}: {}", path, e)
+                        })?;
 
                         self.watcher.watch(&realpath, RecursiveMode::Recursive)?;
                         self.link_map.entry(realpath).or_default().insert(path);
@@ -278,7 +279,6 @@ impl<WATCH: Watch, WRITE: Write> Monitor<WATCH, WRITE> {
 
     fn send_error(&mut self, msg: &str) {
         self.send_cmd("ERROR", &[msg]);
-        exit(1);
     }
 }
 
@@ -550,7 +550,9 @@ fn main() -> Fallible<()> {
     });
 
     for event in rx {
-        monitor.handle_event(event)?;
+        if let Err(e) = monitor.handle_event(event) {
+            error!("Error handling event: {}", e);
+        }
     }
 
     Ok(())
