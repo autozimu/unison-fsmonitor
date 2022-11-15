@@ -1,0 +1,97 @@
+name: Build, test and release
+
+on: [push, pull_request]
+
+jobs:
+  create-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Create release"
+        uses: actions/create-release@v1
+        id: create_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+      - name: Output release URL file
+        run: echo "${{ steps.create_release.outputs.upload_url }}" > release_url.txt
+      - name: Save Release URL File for publish
+        uses: actions/upload-artifact@v1
+        with:
+          name: release_url
+          path: release_url.txt
+
+  build-test-and-release:
+    strategy:
+      fail-fast: false
+      matrix:
+        job:
+          - { target: x86_64-apple-darwin, exe: macos-amd64, os: macos-latest, test: true }
+          - { target: aarch64-apple-darwin, exe: macos-aarch64, os: macos-latest, test: false } # run aarch64 binary is not supported
+          # Linux already has a native binary: https://github.com/Homebrew/homebrew-core/pull/115779
+          # - { target: x86_64-unknown-linux-gnu, exe: linux-amd64, os: ubuntu-latest, test: true }
+          # - { target: aarch64-unknown-linux-gnu, exe: linux-aarch64, os: ubuntu-latest, test: true }
+    runs-on: ${{ matrix.job.os }}
+    steps:
+      - name: "Checkout the code"
+        uses: actions/checkout@v2
+      - name: "Setup Rust toolchain"
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          target: ${{ matrix.job.target }}
+          components: rust-src # necessary for wasi, because there isn't a cross image for it
+      - name: "Build the package"
+        uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          args: --verbose --target=${{ matrix.job.target }} --locked
+          command: build
+      - name: "Run tests"
+        uses: actions-rs/cargo@v1
+        if: ${{ matrix.job.test == true }}
+        with:
+          use-cross: true
+          args: --verbose --target=${{ matrix.job.target }} --locked
+          command: test
+      - name: "Build release binary"
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          args: --verbose --release --target=${{ matrix.job.target }} --locked
+          command: build
+      - name: "Prepare the artifacts"
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: cd target/${{ matrix.job.target }}/release && tar -cvf unison-fsmonitor-${{ matrix.job.exe }}.tar.gz unison-fsmonitor
+      - name: Load release URL File from release job
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/download-artifact@v1
+        with:
+          name: release_url
+      - name: Get release file name & upload URL
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: get_release_info
+        run: |
+          echo ::set-output name=file_name::${REPOSITORY_NAME##*/}-${TAG_REF_NAME##*/v} # RepositoryName-v1.0.0
+          value=`cat release_url/release_url.txt`
+          echo ::set-output name=upload_url::$value
+        env:
+          TAG_REF_NAME: ${{ github.ref }}
+          REPOSITORY_NAME: ${{ github.repository }}
+      - name: "Upload the artifacts"
+        uses: actions/upload-release-asset@v1
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.get_release_info.outputs.upload_url }}
+          asset_path: ./target/${{ matrix.job.target }}/release/unison-fsmonitor-${{ matrix.job.exe }}.tar.gz
+          asset_name: unison-fsmonitor-${{ matrix.job.exe }}.tar.gz
+          asset_content_type: application/gzip
