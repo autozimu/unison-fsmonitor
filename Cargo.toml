@@ -7,9 +7,6 @@ authors = ["Junfeng Li <autozimu@gmail.com>"]
 license = "MIT"
 edition = "2021"
 
-[package.metadata.release]
-dev-version = false
-
 [dependencies]
 percent-encoding = "2"
 failure = { version = "0", default-features = false, features = ["std"] }
