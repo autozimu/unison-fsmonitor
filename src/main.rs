@@ -299,6 +299,7 @@ impl<WATCH: Watch, WRITE: Write> Monitor<WATCH, WRITE> {
 
     fn send_error(&mut self, msg: &str) {
         self.send_cmd("ERROR", &[msg]);
+        std::process::exit(1);
     }
 }
 
