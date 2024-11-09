@@ -17,8 +17,12 @@ jobs:
           release_name: Release ${{ github.ref }}
           draft: false
           prerelease: false
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
 
   build-test-and-release:
+    needs: create-release
+    if: ${{ always() }}
     strategy:
       fail-fast: false
       matrix:
@@ -69,7 +73,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.create-release.outputs.upload_url }}
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
           asset_path: ./target/${{ matrix.job.target }}/release/unison-fsmonitor-${{ matrix.job.exe }}.tar.gz
           asset_name: unison-fsmonitor-${{ matrix.job.exe }}.tar.gz
           asset_content_type: application/gzip
