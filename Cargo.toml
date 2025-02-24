@@ -5,7 +5,7 @@ repository = "https://github.com/autozimu/unison-fsmonitor"
 version = "0.3.8"
 authors = ["Junfeng Li <autozimu@gmail.com>"]
 license = "MIT"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 percent-encoding = "2"
