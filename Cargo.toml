@@ -10,7 +10,7 @@ edition = "2024"
 [dependencies]
 percent-encoding = "2"
 failure = { version = "0", default-features = false, features = ["std"] }
-notify = "4"
+notify = "6"
 log = "0.4"
 env_logger = "0.9"
 
