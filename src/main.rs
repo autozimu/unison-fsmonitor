@@ -1,6 +1,6 @@
 use failure::{bail, Fallible, ResultExt};
 use log::{debug, error, info};
-use notify::{RawEvent, RecommendedWatcher, RecursiveMode};
+use notify::{Event as NotifyEvent, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
 use std::io::{stdin, stdout, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -36,7 +36,7 @@ fn parse_input(input: &str) -> Fallible<(String, Vec<String>)> {
 #[derive(Debug)]
 enum Event {
     Input(String),
-    FSEvent(RawEvent),
+    FSEvent(NotifyEvent),
 }
 
 trait Watch {
@@ -222,6 +222,7 @@ impl<WATCH: Watch, WRITE: Write> Monitor<WATCH, WRITE> {
                     }
                     "DEBUG" | "DONE" => {
                         // TODO: update debug level.
+                        // Just ignore — unison sends DEBUG when run with -debug flag
                     }
                     _ => {
                         self.send_error(&format!("Unrecognized cmd: {}", cmd));
@@ -231,7 +232,7 @@ impl<WATCH: Watch, WRITE: Write> Monitor<WATCH, WRITE> {
             Event::FSEvent(fsevent) => {
                 let mut matched_replica_ids = HashSet::new();
 
-                if let Some(path) = fsevent.path {
+                for path in &fsevent.paths {
                     let mut paths = vec![path.clone()];
                     // Get all possible symbolic links for this path.
                     for (realpath, links) in &self.link_map {
@@ -619,14 +620,18 @@ mod test {
 fn main() -> Fallible<()> {
     env_logger::init();
 
-    let (fsevent_tx, fsevent_rx) = channel();
-    let watcher: RecommendedWatcher = notify::Watcher::new_raw(fsevent_tx)?;
+    let (tx, rx) = channel();
+
+    let tx_fsevent = tx.clone();
+    let watcher: RecommendedWatcher = notify::recommended_watcher(move |res: notify::Result<NotifyEvent>| {
+        if let Ok(event) = res {
+            let _ = tx_fsevent.send(Event::FSEvent(event));
+        }
+    })?;
 
     let stdout = stdout();
     let stdout = stdout.lock();
     let mut monitor = Monitor::new(watcher, stdout);
-
-    let (tx, rx) = channel();
 
     let tx_clone = tx.clone();
     thread::spawn(move || -> Fallible<()> {
@@ -638,13 +643,6 @@ fn main() -> Fallible<()> {
             handle.read_line(&mut input)?;
             tx_clone.send(Event::Input(input))?;
         }
-    });
-
-    thread::spawn(move || -> Fallible<()> {
-        for event in fsevent_rx {
-            tx.send(Event::FSEvent(event))?;
-        }
-        Ok(())
     });
 
     for event in rx {
